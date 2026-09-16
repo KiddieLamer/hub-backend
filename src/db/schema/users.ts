@@ -26,6 +26,7 @@ export const users = pgTable('users', {
 
   // 4. Akses, Status, & Multi-Tenant
   role: varchar('role', { length: 50 }).default('user').notNull(),
+  platformRole: varchar('platform_role', { length: 50 }),
   status: varchar('status', { length: 20 }).default('active').notNull(),
   currentTenantId: uuid('current_tenant_id'),
   lastLoginAt: timestamp('last_login_at'),

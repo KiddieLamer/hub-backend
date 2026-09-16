@@ -4,6 +4,7 @@ import { eq, and } from 'drizzle-orm'
 import { db } from '../../db'
 import { tenants, tenantMembers, users } from '../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../middleware/auth'
+import { requirePlatformOwner } from '../../middleware/platform'
 
 type Variables = AuthVariables & {
   tenant: { tenantId: string; tenantRole: string }
@@ -73,7 +74,15 @@ tenantsRouter.get('/', async (c) => {
   return c.json({ tenants: result })
 })
 
-tenantsRouter.post('/', async (c) => {
+tenantsRouter.get('/all', requirePlatformOwner, async (c) => {
+  const allTenants = await db.query.tenants.findMany({
+    orderBy: (tenants, { desc }) => [desc(tenants.createdAt)],
+  })
+
+  return c.json({ tenants: allTenants })
+})
+
+tenantsRouter.post('/', requirePlatformOwner, async (c) => {
   const user = c.get('user')
   const body = createTenantSchema.parse(await c.req.json())
 

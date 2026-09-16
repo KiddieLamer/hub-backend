@@ -11,6 +11,7 @@ export interface AuthUser {
   fullName: string | null
   roles: string[]
   permissions: string[]
+  platformRole: string | null
 }
 
 export type Variables = {
@@ -63,6 +64,7 @@ export async function authMiddleware(c: Context<{ Variables: Variables }>, next:
       fullName: user.fullName,
       roles: roleNames,
       permissions: permissionNames,
+      platformRole: user.platformRole,
     } satisfies AuthUser)
 
     await next()

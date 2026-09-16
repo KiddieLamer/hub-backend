@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { eq, or, ilike, and, isNull } from 'drizzle-orm'
 import { db } from '../../db'
-import { users } from '../../db/schema'
+import { users, tenantMembers } from '../../db/schema'
 import { authMiddleware, type Variables } from '../../middleware/auth'
 import { hashPassword } from '../../lib/password'
 
@@ -37,6 +37,8 @@ const createUserSchema = z.object({
   department: z.string().max(100).optional(),
   role: z.enum(['admin', 'user', 'viewer']).default('user'),
   status: z.enum(['active', 'inactive', 'suspended']).default('active'),
+  tenantId: z.string().uuid().optional(),
+  memberRole: z.enum(['owner', 'admin', 'member']).default('member'),
 })
 
 usersRouter.get('/', async (c) => {
@@ -97,6 +99,7 @@ usersRouter.get('/me', async (c) => {
       phoneNumber: true,
       avatarUrl: true,
       role: true,
+      platformRole: true,
       status: true,
       jobTitle: true,
       department: true,
@@ -215,6 +218,14 @@ usersRouter.post('/', async (c) => {
       jobTitle: users.jobTitle, department: users.department,
       role: users.role, status: users.status, createdAt: users.createdAt,
     })
+
+  if (body.tenantId) {
+    await db.insert(tenantMembers).values({
+      userId: user.id,
+      tenantId: body.tenantId,
+      role: body.memberRole,
+    })
+  }
 
   return c.json({ user }, 201)
 })
