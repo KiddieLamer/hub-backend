@@ -86,6 +86,100 @@ usersRouter.get('/', async (c) => {
   return c.json({ users: data, total: data.length })
 })
 
+usersRouter.get('/me', async (c) => {
+  const authUser = c.get('user')
+  const user = await db.query.users.findFirst({
+    where: eq(users.id, authUser.id),
+    columns: {
+      id: true,
+      email: true,
+      fullName: true,
+      phoneNumber: true,
+      avatarUrl: true,
+      role: true,
+      status: true,
+      jobTitle: true,
+      department: true,
+      employeeId: true,
+      currentTenantId: true,
+      lastLoginAt: true,
+      is2faEnabled: true,
+      emailVerifiedAt: true,
+      phoneVerifiedAt: true,
+      createdAt: true,
+    },
+  })
+
+  if (!user) {
+    return c.json({ error: 'User not found' }, 404)
+  }
+
+  return c.json({ user })
+})
+
+usersRouter.patch('/me', async (c) => {
+  const authUser = c.get('user')
+  const body = updateProfileSchema.parse(await c.req.json())
+
+  const [updated] = await db
+    .update(users)
+    .set({ ...body, updatedAt: new Date() })
+    .where(eq(users.id, authUser.id))
+    .returning({
+      id: users.id,
+      email: users.email,
+      fullName: users.fullName,
+      phoneNumber: users.phoneNumber,
+      avatarUrl: users.avatarUrl,
+      jobTitle: users.jobTitle,
+      department: users.department,
+      employeeId: users.employeeId,
+    })
+
+  return c.json({ user: updated })
+})
+
+usersRouter.post('/me/change-password', async (c) => {
+  const authUser = c.get('user')
+  const body = changePasswordSchema.parse(await c.req.json())
+
+  const user = await db.query.users.findFirst({
+    where: eq(users.id, authUser.id),
+  })
+
+  if (!user) {
+    return c.json({ error: 'User not found' }, 404)
+  }
+
+  const valid = await import('../../lib/password').then((m) =>
+    m.comparePassword(body.currentPassword, user.passwordHash)
+  )
+
+  if (!valid) {
+    return c.json({ error: 'Current password is incorrect' }, 401)
+  }
+
+  const passwordHash = await hashPassword(body.newPassword)
+  await db
+    .update(users)
+    .set({ passwordHash, updatedAt: new Date() })
+    .where(eq(users.id, authUser.id))
+
+  return c.json({ message: 'Password updated' })
+})
+
+usersRouter.delete('/me', async (c) => {
+  const authUser = c.get('user')
+
+  // Soft delete
+  await db
+    .update(users)
+    .set({ deletedAt: new Date(), updatedAt: new Date() })
+    .where(eq(users.id, authUser.id))
+
+  return c.json({ message: 'Account deleted' })
+})
+
 usersRouter.post('/', async (c) => {
   const body = createUserSchema.parse(await c.req.json())
 
@@ -179,100 +273,6 @@ usersRouter.delete('/:id', async (c) => {
   }
 
   return c.json({ message: 'User deleted' })
-})
-
-usersRouter.get('/me', async (c) => {
-  const authUser = c.get('user')
-  const user = await db.query.users.findFirst({
-    where: eq(users.id, authUser.id),
-    columns: {
-      id: true,
-      email: true,
-      fullName: true,
-      phoneNumber: true,
-      avatarUrl: true,
-      role: true,
-      status: true,
-      jobTitle: true,
-      department: true,
-      employeeId: true,
-      currentTenantId: true,
-      lastLoginAt: true,
-      is2faEnabled: true,
-      emailVerifiedAt: true,
-      phoneVerifiedAt: true,
-      createdAt: true,
-    },
-  })
-
-  if (!user) {
-    return c.json({ error: 'User not found' }, 404)
-  }
-
-  return c.json({ user })
-})
-
-usersRouter.patch('/me', async (c) => {
-  const authUser = c.get('user')
-  const body = updateProfileSchema.parse(await c.req.json())
-
-  const [updated] = await db
-    .update(users)
-    .set({ ...body, updatedAt: new Date() })
-    .where(eq(users.id, authUser.id))
-    .returning({
-      id: users.id,
-      email: users.email,
-      fullName: users.fullName,
-      phoneNumber: users.phoneNumber,
-      avatarUrl: users.avatarUrl,
-      jobTitle: users.jobTitle,
-      department: users.department,
-      employeeId: users.employeeId,
-    })
-
-  return c.json({ user: updated })
-})
-
-usersRouter.post('/me/change-password', async (c) => {
-  const authUser = c.get('user')
-  const body = changePasswordSchema.parse(await c.req.json())
-
-  const user = await db.query.users.findFirst({
-    where: eq(users.id, authUser.id),
-  })
-
-  if (!user) {
-    return c.json({ error: 'User not found' }, 404)
-  }
-
-  const valid = await import('../../lib/password').then((m) =>
-    m.comparePassword(body.currentPassword, user.passwordHash)
-  )
-
-  if (!valid) {
-    return c.json({ error: 'Current password is incorrect' }, 401)
-  }
-
-  const passwordHash = await hashPassword(body.newPassword)
-  await db
-    .update(users)
-    .set({ passwordHash, updatedAt: new Date() })
-    .where(eq(users.id, authUser.id))
-
-  return c.json({ message: 'Password updated' })
-})
-
-usersRouter.delete('/me', async (c) => {
-  const authUser = c.get('user')
-
-  // Soft delete
-  await db
-    .update(users)
-    .set({ deletedAt: new Date(), updatedAt: new Date() })
-    .where(eq(users.id, authUser.id))
-
-  return c.json({ message: 'Account deleted' })
 })
 
 export default usersRouter

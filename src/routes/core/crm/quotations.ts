@@ -56,7 +56,6 @@ quotationRouter.get('/', async (c) => {
   const data = await db.query.quotations.findMany({
     where: whereClause,
     orderBy: (fields: any, { desc: d }: any) => [d(fields.createdAt)],
-    with: { client: { columns: { id: true, name: true } } },
   })
 
   return c.json({ quotations: data, total: data.length })
@@ -91,7 +90,6 @@ quotationRouter.get('/:id', async (c) => {
   const quotation = await db.query.quotations.findFirst({
     where: and(eq(quotations.id, id), eq(quotations.tenantId, tenant.tenantId)),
     with: {
-      client: { columns: { id: true, name: true, email: true, phone: true } },
       items: true,
     },
   })
@@ -163,7 +161,7 @@ quotationRouter.post('/', async (c) => {
 
   const result = await db.query.quotations.findFirst({
     where: eq(quotations.id, quotation.id),
-    with: { items: true, client: { columns: { id: true, name: true } } },
+    with: { items: true },
   })
 
   return c.json({ quotation: result }, 201)
@@ -222,7 +220,7 @@ quotationRouter.patch('/:id', async (c) => {
 
   const result = await db.query.quotations.findFirst({
     where: eq(quotations.id, updated.id),
-    with: { items: true, client: { columns: { id: true, name: true } } },
+    with: { items: true },
   })
 
   return c.json({ quotation: result })
@@ -306,7 +304,7 @@ quotationRouter.post('/:id/convert-to-project', async (c) => {
 
   const quotation = await db.query.quotations.findFirst({
     where: and(eq(quotations.id, id), eq(quotations.tenantId, tenant.tenantId)),
-    with: { items: true, client: true },
+    with: { items: true },
   })
 
   if (!quotation) return c.json({ error: 'Quotation not found' }, 404)
@@ -321,7 +319,7 @@ quotationRouter.post('/:id/convert-to-project', async (c) => {
       tenantId: tenant.tenantId,
       projectCode,
       name: quotation.title,
-      description: `Proyek dari penawaran ${quotation.quotationNumber} - ${(quotation as any).client?.name || ''}`,
+      description: `Proyek dari penawaran ${quotation.quotationNumber}`,
       clientId: quotation.clientId,
       projectManagerId: user.id,
       createdBy: user.id,
