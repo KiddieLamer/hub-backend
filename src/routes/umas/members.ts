@@ -39,6 +39,8 @@ membersRouter.get('/', async (c) => {
       userFullName: users.fullName,
       userEmail: users.email,
       userAvatarUrl: users.avatarUrl,
+      userPhoneNumber: users.phoneNumber,
+      userDepartment: users.department,
     })
     .from(tenantMembers)
     .innerJoin(users, eq(tenantMembers.userId, users.id))
