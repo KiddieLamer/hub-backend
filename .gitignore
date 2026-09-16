@@ -1,0 +1,8 @@
+node_modules
+dist
+*.local
+*.local.md
+.env
+.env.*
+rate-limit-store.json
+.DS_Store
