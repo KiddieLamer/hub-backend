@@ -112,29 +112,6 @@ tenantsRouter.post('/', requirePlatformOwner, async (c) => {
   return c.json({ tenant }, 201)
 })
 
-tenantsRouter.get('/:id', async (c) => {
-  const user = c.get('user')
-  const { id } = c.req.param()
-
-  const membership = await db.query.tenantMembers.findFirst({
-    where: and(eq(tenantMembers.userId, user.id), eq(tenantMembers.tenantId, id)),
-  })
-
-  if (!membership) {
-    return c.json({ error: 'Access denied' }, 403)
-  }
-
-  const tenant = await db.query.tenants.findFirst({
-    where: eq(tenants.id, id),
-  })
-
-  if (!tenant) {
-    return c.json({ error: 'Tenant not found' }, 404)
-  }
-
-  return c.json({ tenant, role: membership.role })
-})
-
 tenantsRouter.get('/current', async (c) => {
   const authUser = c.get('user')
   const user = await db.query.users.findFirst({
@@ -215,6 +192,29 @@ tenantsRouter.post('/switch', async (c) => {
   await db.update(users).set({ currentTenantId: tenantId }).where(eq(users.id, user.id))
 
   return c.json({ tenantId, role: membership.role })
+})
+
+tenantsRouter.get('/:id', async (c) => {
+  const user = c.get('user')
+  const { id } = c.req.param()
+
+  const membership = await db.query.tenantMembers.findFirst({
+    where: and(eq(tenantMembers.userId, user.id), eq(tenantMembers.tenantId, id)),
+  })
+
+  if (!membership) {
+    return c.json({ error: 'Access denied' }, 403)
+  }
+
+  const tenant = await db.query.tenants.findFirst({
+    where: eq(tenants.id, id),
+  })
+
+  if (!tenant) {
+    return c.json({ error: 'Tenant not found' }, 404)
+  }
+
+  return c.json({ tenant, role: membership.role })
 })
 
 export default tenantsRouter
