@@ -171,6 +171,32 @@ usersRouter.post('/me/change-password', async (c) => {
   return c.json({ message: 'Password updated' })
 })
 
+usersRouter.post('/:id/reset-password', async (c) => {
+  const authUser = c.get('user')
+  const { id } = c.req.param()
+  const body = await c.req.json()
+
+  if (!body.newPassword || body.newPassword.length < 6) {
+    return c.json({ error: 'Password must be at least 6 characters' }, 400)
+  }
+
+  const user = await db.query.users.findFirst({
+    where: eq(users.id, id),
+  })
+
+  if (!user) {
+    return c.json({ error: 'User not found' }, 404)
+  }
+
+  const passwordHash = await hashPassword(body.newPassword)
+  await db
+    .update(users)
+    .set({ passwordHash, updatedAt: new Date() })
+    .where(eq(users.id, id))
+
+  return c.json({ message: 'Password reset successfully' })
+})
+
 usersRouter.delete('/me', async (c) => {
   const authUser = c.get('user')
 
