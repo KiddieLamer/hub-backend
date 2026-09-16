@@ -127,22 +127,53 @@ tenantsRouter.get('/:id', async (c) => {
 })
 
 tenantsRouter.get('/current', async (c) => {
-  const tenantCtx = c.get('tenant')
+  const authUser = c.get('user')
+  const user = await db.query.users.findFirst({
+    where: eq(users.id, authUser.id),
+    columns: { currentTenantId: true },
+  })
+
+  if (!user?.currentTenantId) {
+    return c.json({ error: 'No tenant selected' }, 400)
+  }
+
   const tenant = await db.query.tenants.findFirst({
-    where: eq(tenants.id, tenantCtx.tenantId),
+    where: eq(tenants.id, user.currentTenantId),
   })
 
   if (!tenant) {
     return c.json({ error: 'Tenant not found' }, 404)
   }
 
-  return c.json({ tenant, role: tenantCtx.tenantRole })
+  const membership = await db.query.tenantMembers.findFirst({
+    where: and(
+      eq(tenantMembers.userId, authUser.id),
+      eq(tenantMembers.tenantId, tenant.id),
+    ),
+  })
+
+  return c.json({ tenant, role: membership?.role || 'member' })
 })
 
 tenantsRouter.patch('/current', async (c) => {
-  const tenantCtx = c.get('tenant')
+  const authUser = c.get('user')
+  const user = await db.query.users.findFirst({
+    where: eq(users.id, authUser.id),
+    columns: { currentTenantId: true },
+  })
 
-  if (!['owner', 'admin'].includes(tenantCtx.tenantRole)) {
+  if (!user?.currentTenantId) {
+    return c.json({ error: 'No tenant selected' }, 400)
+  }
+
+  const membership = await db.query.tenantMembers.findFirst({
+    where: and(
+      eq(tenantMembers.userId, authUser.id),
+      eq(tenantMembers.tenantId, user.currentTenantId),
+    ),
+  })
+
+  if (!membership || !['owner', 'admin'].includes(membership.role)) {
     return c.json({ error: 'Insufficient permissions' }, 403)
   }
 
@@ -151,7 +182,7 @@ tenantsRouter.patch('/current', async (c) => {
   const [updated] = await db
     .update(tenants)
     .set({ ...body, updatedAt: new Date() })
-    .where(eq(tenants.id, tenantCtx.tenantId))
+    .where(eq(tenants.id, user.currentTenantId))
     .returning()
 
   return c.json({ tenant: updated })
