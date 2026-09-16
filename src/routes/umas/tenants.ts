@@ -194,6 +194,15 @@ tenantsRouter.post('/switch', async (c) => {
   return c.json({ tenantId, role: membership.role })
 })
 
+tenantsRouter.delete('/:id', requirePlatformOwner, async (c) => {
+  const { id } = c.req.param()
+
+  await db.delete(tenantMembers).where(eq(tenantMembers.tenantId, id))
+  await db.delete(tenants).where(eq(tenants.id, id))
+
+  return c.json({ success: true })
+})
+
 tenantsRouter.get('/:id', async (c) => {
   const user = c.get('user')
   const { id } = c.req.param()
