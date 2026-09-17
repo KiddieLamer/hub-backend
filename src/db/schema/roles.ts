@@ -3,8 +3,10 @@ import { users } from './users'
 
 export const roles = pgTable('roles', {
   id: uuid('id').defaultRandom().primaryKey(),
-  name: varchar('name', { length: 100 }).notNull().unique(),
+  tenantId: uuid('tenant_id').notNull(),
+  name: varchar('name', { length: 100 }).notNull(),
   description: varchar('description', { length: 500 }),
+  isSystem: varchar('is_system', { length: 10 }).default('false').notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 })
 
