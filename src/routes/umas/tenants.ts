@@ -185,13 +185,21 @@ tenantsRouter.post('/switch', async (c) => {
     ),
   })
 
-  if (!membership) {
+  if (!membership && !user.platformRole) {
     return c.json({ error: 'Access denied' }, 403)
+  }
+
+  if (!membership && user.platformRole === 'owner') {
+    await db.insert(tenantMembers).values({
+      userId: user.id,
+      tenantId: tenantId,
+      role: 'owner',
+    })
   }
 
   await db.update(users).set({ currentTenantId: tenantId }).where(eq(users.id, user.id))
 
-  return c.json({ tenantId, role: membership.role })
+  return c.json({ tenantId, role: membership?.role || 'owner' })
 })
 
 tenantsRouter.delete('/:id', requirePlatformOwner, async (c) => {
