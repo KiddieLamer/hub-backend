@@ -49,15 +49,13 @@ tenantsRouter.get('/', async (c) => {
     where: eq(tenantMembers.userId, user.id),
   })
 
-  const tenantIds = memberships.map((m) => m.tenantId)
-  if (tenantIds.length === 0) {
-    return c.json({ tenants: [] })
-  }
-
   const allTenants = await db.query.tenants.findMany()
 
   const result = allTenants
-    .filter((t) => tenantIds.includes(t.id))
+    .filter((t) => {
+      if (user.platformRole === 'owner') return true
+      return memberships.some((m) => m.tenantId === t.id)
+    })
     .map((t) => {
       const membership = memberships.find((m) => m.tenantId === t.id)
       return {
@@ -67,7 +65,7 @@ tenantsRouter.get('/', async (c) => {
         logoUrl: t.logoUrl,
         plan: t.plan,
         status: t.status,
-        role: membership?.role,
+        role: membership?.role || (user.platformRole === 'owner' ? 'hub-admin' : null),
       }
     })
 
@@ -83,7 +81,6 @@ tenantsRouter.get('/all', requirePlatformOwner, async (c) => {
 })
 
 tenantsRouter.post('/', requirePlatformOwner, async (c) => {
-  const user = c.get('user')
   const body = createTenantSchema.parse(await c.req.json())
 
   const existing = await db.query.tenants.findFirst({
@@ -100,14 +97,6 @@ tenantsRouter.post('/', requirePlatformOwner, async (c) => {
     ...body,
     dbSchema: dbSchemaName,
   }).returning()
-
-  await db.insert(tenantMembers).values({
-    userId: user.id,
-    tenantId: tenant.id,
-    role: 'owner',
-  })
-
-  await db.update(users).set({ currentTenantId: tenant.id }).where(eq(users.id, user.id))
 
   return c.json({ tenant }, 201)
 })
@@ -189,17 +178,9 @@ tenantsRouter.post('/switch', async (c) => {
     return c.json({ error: 'Access denied' }, 403)
   }
 
-  if (!membership && user.platformRole === 'owner') {
-    await db.insert(tenantMembers).values({
-      userId: user.id,
-      tenantId: tenantId,
-      role: 'owner',
-    })
-  }
-
   await db.update(users).set({ currentTenantId: tenantId }).where(eq(users.id, user.id))
 
-  return c.json({ tenantId, role: membership?.role || 'owner' })
+  return c.json({ tenantId, role: membership?.role || 'hub-admin' })
 })
 
 tenantsRouter.delete('/:id', requirePlatformOwner, async (c) => {
