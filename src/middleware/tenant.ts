@@ -38,12 +38,12 @@ export async function tenantMiddleware(c: Context<{ Variables: { user: AuthUser 
     where: eq(tenants.id, tenantId),
   })
 
-  if (!tenant) {
+  if (!tenant && !isHubAdmin) {
     return c.json({ error: 'Tenant not found' }, 404)
   }
 
   c.set('tenant', {
-    tenantId: tenant.id,
+    tenantId: tenantId,
     tenantRole: membership?.role || 'hub-admin',
   })
 
