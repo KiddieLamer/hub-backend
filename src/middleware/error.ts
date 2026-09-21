@@ -5,12 +5,13 @@ export async function errorMiddleware(c: Context, next: Next) {
   try {
     await next()
   } catch (err) {
-    if (err instanceof ZodError) {
+    if (err instanceof ZodError || (err && typeof err === 'object' && 'issues' in err && Array.isArray((err as any).issues))) {
+      const issues = (err as any).issues || []
       return c.json(
         {
-          error: 'Validation error',
-          details: err.errors.map((e) => ({
-            field: e.path.join('.'),
+          error: issues[0]?.message || 'Data tidak valid',
+          details: issues.map((e: any) => ({
+            field: e.path?.join('.') || '',
             message: e.message,
           })),
         },
