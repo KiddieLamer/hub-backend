@@ -28,7 +28,7 @@ export async function tenantMiddleware(c: Context<{ Variables: { user: AuthUser 
     ),
   })
 
-  const isHubAdmin = user.platformRole === 'owner'
+  const isHubAdmin = user.platformRole === 'hub-admin'
 
   if (!membership && !isHubAdmin) {
     return c.json({ error: 'Access denied to this tenant' }, 403)

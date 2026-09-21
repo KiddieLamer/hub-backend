@@ -15,7 +15,7 @@ async function seed() {
       fullName: 'Admin Hub',
       passwordHash: adminPassword,
       role: 'admin',
-      platformRole: 'owner',
+      platformRole: 'hub-admin',
       status: 'active',
     }).returning()
     admin = created

@@ -53,7 +53,7 @@ tenantsRouter.get('/', async (c) => {
 
   const result = allTenants
     .filter((t) => {
-      if (user.platformRole === 'owner') return true
+      if (user.platformRole === 'hub-admin') return true
       return memberships.some((m) => m.tenantId === t.id)
     })
     .map((t) => {
@@ -65,7 +65,7 @@ tenantsRouter.get('/', async (c) => {
         logoUrl: t.logoUrl,
         plan: t.plan,
         status: t.status,
-        role: membership?.role || (user.platformRole === 'owner' ? 'hub-admin' : null),
+        role: membership?.role || (user.platformRole === 'hub-admin' ? 'hub-admin' : null),
       }
     })
 

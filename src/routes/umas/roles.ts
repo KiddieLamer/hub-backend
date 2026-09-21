@@ -24,7 +24,7 @@ rolesRouter.post('/', async (c) => {
   if (!tenantId) return c.json({ error: 'X-Tenant-ID header required' }, 400)
 
   const user = c.get('user')
-  if (user.platformRole === 'owner') {
+  if (user.platformRole === 'hub-admin') {
     // hub-admin can create roles in any tenant
   } else {
     const membership = await db.query.tenantMembers.findFirst({
@@ -66,7 +66,7 @@ rolesRouter.delete('/:id', async (c) => {
   const tenantId = c.req.header('X-Tenant-ID')
 
   const user = c.get('user')
-  if (user.platformRole !== 'owner') {
+  if (user.platformRole !== 'hub-admin') {
     if (!tenantId) return c.json({ error: 'X-Tenant-ID header required' }, 400)
     const membership = await db.query.tenantMembers.findFirst({
       where: and(eq(tenantMembers.userId, user.id), eq(tenantMembers.tenantId, tenantId)),
