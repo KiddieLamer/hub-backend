@@ -4,7 +4,7 @@ import { eq, and } from 'drizzle-orm'
 import { db } from '../../db'
 import { tenants, tenantMembers, users } from '../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../middleware/auth'
-import { requirePlatformOwner } from '../../middleware/platform'
+import { requireHubAdmin } from '../../middleware/platform'
 
 type Variables = AuthVariables & {
   tenant: { tenantId: string; tenantRole: string }
@@ -72,7 +72,7 @@ tenantsRouter.get('/', async (c) => {
   return c.json({ tenants: result })
 })
 
-tenantsRouter.get('/all', requirePlatformOwner, async (c) => {
+tenantsRouter.get('/all', requireHubAdmin, async (c) => {
   const allTenants = await db.query.tenants.findMany({
     orderBy: (tenants, { desc }) => [desc(tenants.createdAt)],
   })
@@ -80,7 +80,7 @@ tenantsRouter.get('/all', requirePlatformOwner, async (c) => {
   return c.json({ tenants: allTenants })
 })
 
-tenantsRouter.post('/', requirePlatformOwner, async (c) => {
+tenantsRouter.post('/', requireHubAdmin, async (c) => {
   const body = createTenantSchema.parse(await c.req.json())
 
   const existing = await db.query.tenants.findFirst({
@@ -183,7 +183,7 @@ tenantsRouter.post('/switch', async (c) => {
   return c.json({ tenantId, role: membership?.role || 'hub-admin' })
 })
 
-tenantsRouter.delete('/:id', requirePlatformOwner, async (c) => {
+tenantsRouter.delete('/:id', requireHubAdmin, async (c) => {
   const { id } = c.req.param()
 
   await db.delete(tenantMembers).where(eq(tenantMembers.tenantId, id))
