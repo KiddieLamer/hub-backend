@@ -1,12 +1,11 @@
 import { Hono } from 'hono'
 import { db } from '../../db'
-import { roles, rolePermissions, permissions } from '../../db/schema'
-import { authMiddleware } from '../../middleware/auth'
-import { requirePlatformOwner } from '../../middleware/platform'
+import { roles, rolePermissions, permissions, tenantMembers } from '../../db/schema'
+import { authMiddleware, type Variables } from '../../middleware/auth'
 import { z } from 'zod'
-import { sql } from 'drizzle-orm'
+import { sql, eq, and } from 'drizzle-orm'
 
-const rolesRouter = new Hono()
+const rolesRouter = new Hono<{ Variables: Variables }>()
 
 rolesRouter.use('*', authMiddleware)
 
@@ -20,9 +19,21 @@ rolesRouter.get('/', async (c) => {
   return c.json({ roles: tenantRoles })
 })
 
-rolesRouter.post('/', requirePlatformOwner, async (c) => {
+rolesRouter.post('/', async (c) => {
   const tenantId = c.req.header('X-Tenant-ID')
   if (!tenantId) return c.json({ error: 'X-Tenant-ID header required' }, 400)
+
+  const user = c.get('user')
+  if (user.platformRole === 'owner') {
+    // hub-admin can create roles in any tenant
+  } else {
+    const membership = await db.query.tenantMembers.findFirst({
+      where: and(eq(tenantMembers.userId, user.id), eq(tenantMembers.tenantId, tenantId)),
+    })
+    if (!membership || !['owner', 'admin'].includes(membership.role)) {
+      return c.json({ error: 'Insufficient permissions' }, 403)
+    }
+  }
 
   const body = z.object({
     name: z.string().min(1).max(100),
@@ -50,8 +61,20 @@ rolesRouter.post('/', requirePlatformOwner, async (c) => {
   return c.json({ role }, 201)
 })
 
-rolesRouter.delete('/:id', requirePlatformOwner, async (c) => {
-  const id = c.req.param('id')
+rolesRouter.delete('/:id', async (c) => {
+  const { id } = c.req.param()
+  const tenantId = c.req.header('X-Tenant-ID')
+
+  const user = c.get('user')
+  if (user.platformRole !== 'owner') {
+    if (!tenantId) return c.json({ error: 'X-Tenant-ID header required' }, 400)
+    const membership = await db.query.tenantMembers.findFirst({
+      where: and(eq(tenantMembers.userId, user.id), eq(tenantMembers.tenantId, tenantId)),
+    })
+    if (!membership || !['owner', 'admin'].includes(membership.role)) {
+      return c.json({ error: 'Insufficient permissions' }, 403)
+    }
+  }
   const [role] = await db.execute(sql`SELECT * FROM roles WHERE id = ${id}`)
   if (!role) return c.json({ error: 'Role not found' }, 404)
 
