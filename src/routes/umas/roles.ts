@@ -16,11 +16,6 @@ rolesRouter.get('/', async (c) => {
 
   const tenantRoles = await db.query.roles.findMany({
     where: (roles, { eq }) => eq(roles.tenantId, tenantId),
-    with: {
-      rolePermissions: {
-        with: { permission: true },
-      },
-    },
   })
   return c.json({ roles: tenantRoles })
 })
