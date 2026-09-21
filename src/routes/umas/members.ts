@@ -70,7 +70,7 @@ membersRouter.get('/me', async (c) => {
 
 membersRouter.post('/', async (c) => {
   const tenant = c.get('tenant')
-  if (!['owner', 'admin'].includes(tenant.tenantRole)) {
+  if (!['owner', 'admin', 'hub-admin'].includes(tenant.tenantRole)) {
     return c.json({ error: 'Insufficient permissions' }, 403)
   }
   const body = addMemberSchema.parse(await c.req.json())
@@ -106,7 +106,7 @@ membersRouter.post('/', async (c) => {
 
 membersRouter.patch('/:id/role', async (c) => {
   const tenant = c.get('tenant')
-  if (!['owner', 'admin'].includes(tenant.tenantRole)) {
+  if (!['owner', 'admin', 'hub-admin'].includes(tenant.tenantRole)) {
     return c.json({ error: 'Insufficient permissions' }, 403)
   }
   const { id } = c.req.param()
@@ -130,7 +130,7 @@ membersRouter.patch('/:id/role', async (c) => {
 
 membersRouter.patch('/:id/job-title', async (c) => {
   const tenant = c.get('tenant')
-  if (!['owner', 'admin'].includes(tenant.tenantRole)) {
+  if (!['owner', 'admin', 'hub-admin'].includes(tenant.tenantRole)) {
     return c.json({ error: 'Insufficient permissions' }, 403)
   }
   const { id } = c.req.param()
@@ -151,7 +151,7 @@ membersRouter.patch('/:id/job-title', async (c) => {
 
 membersRouter.delete('/:id', async (c) => {
   const tenant = c.get('tenant')
-  if (!['owner', 'admin'].includes(tenant.tenantRole)) {
+  if (!['owner', 'admin', 'hub-admin'].includes(tenant.tenantRole)) {
     return c.json({ error: 'Insufficient permissions' }, 403)
   }
   const { id } = c.req.param()
