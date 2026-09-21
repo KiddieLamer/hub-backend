@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { eq, and } from 'drizzle-orm'
 import { db } from '../../db'
-import { tenantMembers, users } from '../../db/schema'
+import { tenantMembers, users, tenants } from '../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../middleware/auth'
 import { tenantMiddleware, type TenantVariables } from '../../middleware/tenant'
 
@@ -73,6 +73,14 @@ membersRouter.post('/', async (c) => {
   if (!['owner', 'admin', 'hub-admin'].includes(tenant.tenantRole)) {
     return c.json({ error: 'Insufficient permissions' }, 403)
   }
+
+  const tenantExists = await db.query.tenants.findFirst({
+    where: eq(tenants.id, tenant.tenantId),
+  })
+  if (!tenantExists) {
+    return c.json({ error: 'Tenant not found' }, 404)
+  }
+
   const body = addMemberSchema.parse(await c.req.json())
 
   const user = await db.query.users.findFirst({
