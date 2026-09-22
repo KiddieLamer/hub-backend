@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and } from 'drizzle-orm'
+import { eq, and, isNull } from 'drizzle-orm'
 import { db } from '../../db'
 import { tenants, tenantMembers, users } from '../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../middleware/auth'
@@ -148,7 +148,10 @@ tenantsRouter.patch('/current', async (c) => {
     ),
   })
 
-  if (!membership || !['owner', 'admin'].includes(membership.role)) {
+  const isHubAdmin = authUser.platformRole === 'hub-admin'
+  const canUpdate = isHubAdmin || (membership && ['owner', 'admin'].includes(membership.role))
+
+  if (!canUpdate) {
     return c.json({ error: 'Insufficient permissions' }, 403)
   }
 
@@ -163,24 +166,37 @@ tenantsRouter.patch('/current', async (c) => {
   return c.json({ tenant: updated })
 })
 
+const switchTenantSchema = z.object({
+  tenantId: z.string().uuid(),
+})
+
 tenantsRouter.post('/switch', async (c) => {
-  const { tenantId } = await c.req.json()
   const user = c.get('user')
+  const body = switchTenantSchema.parse(await c.req.json())
+
+  const tenant = await db.query.tenants.findFirst({
+    where: and(eq(tenants.id, body.tenantId), isNull(tenants.deletedAt)),
+  })
+  if (!tenant) {
+    return c.json({ error: 'Tenant not found' }, 404)
+  }
 
   const membership = await db.query.tenantMembers.findFirst({
     where: and(
       eq(tenantMembers.userId, user.id),
-      eq(tenantMembers.tenantId, tenantId)
+      eq(tenantMembers.tenantId, body.tenantId),
     ),
   })
 
-  if (!membership && !user.platformRole) {
+  if (!membership && user.platformRole !== 'hub-admin') {
     return c.json({ error: 'Access denied' }, 403)
   }
 
-  await db.update(users).set({ currentTenantId: tenantId }).where(eq(users.id, user.id))
+  await db.update(users)
+    .set({ currentTenantId: body.tenantId })
+    .where(eq(users.id, user.id))
 
-  return c.json({ tenantId, role: membership?.role || 'hub-admin' })
+  return c.json({ tenantId: body.tenantId, role: membership?.role || 'hub-admin' })
 })
 
 tenantsRouter.delete('/:id', requireHubAdmin, async (c) => {
