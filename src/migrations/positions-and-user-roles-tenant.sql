@@ -39,3 +39,8 @@ ALTER TABLE user_roles ALTER COLUMN tenant_id SET NOT NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS user_roles_user_role_tenant_uniq
   ON user_roles(user_id, role_id, tenant_id);
+
+-- The app connects as a non-superuser role (e.g. hubadmin) while migrations
+-- typically run as postgres. Without this, every new table 500s with
+-- "permission denied" (Postgres 42501). Adjust the role name to yours.
+GRANT ALL PRIVILEGES ON TABLE positions TO hubadmin;
