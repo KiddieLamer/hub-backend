@@ -399,6 +399,7 @@ usersRouter.get('/:id', async (c) => {
       id: true, email: true, fullName: true, phoneNumber: true, avatarUrl: true,
       employeeId: true, jobTitle: true, department: true, role: true, status: true,
       dateOfBirth: true, ktpNumber: true, address: true, createdAt: true,
+      currentTenantId: true,
     },
   })
 
@@ -406,7 +407,21 @@ usersRouter.get('/:id', async (c) => {
     return c.json({ error: 'User not found' }, 404)
   }
 
-  return c.json({ user })
+  // Memberships drive per-person tenant display (e.g. ID card logo):
+  // a user with no membership gets no tenant (placeholder), otherwise
+  // their own tenant — never the viewer's active tenant.
+  const memberships = await db
+    .select({
+      id: tenants.id,
+      name: tenants.name,
+      logoUrl: tenants.logoUrl,
+      role: tenantMembers.role,
+    })
+    .from(tenantMembers)
+    .innerJoin(tenants, eq(tenantMembers.tenantId, tenants.id))
+    .where(eq(tenantMembers.userId, id))
+
+  return c.json({ user, tenants: memberships })
 })
 
 usersRouter.patch('/:id', async (c) => {
