@@ -4,6 +4,7 @@ import { eq, and, SQL, inArray } from 'drizzle-orm'
 import { db } from '../../../db'
 import { stockMovements, catalogItems } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
+import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 
 type Variables = AuthVariables & TenantVariables
@@ -11,6 +12,7 @@ type Variables = AuthVariables & TenantVariables
 const stockMovementsRouter = new Hono<{ Variables: Variables }>()
 stockMovementsRouter.use('*', authMiddleware)
 stockMovementsRouter.use('*', tenantMiddleware)
+stockMovementsRouter.use('*', requireModuleAccess('procurement:read', 'procurement:write'))
 
 const adjustSchema = z.object({
   itemId: z.string().uuid(),

@@ -4,6 +4,7 @@ import { eq, and, SQL, ilike } from 'drizzle-orm'
 import { db } from '../../../db'
 import { vendors } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
+import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 
 type Variables = AuthVariables & TenantVariables
@@ -11,6 +12,7 @@ type Variables = AuthVariables & TenantVariables
 const vendorsRouter = new Hono<{ Variables: Variables }>()
 vendorsRouter.use('*', authMiddleware)
 vendorsRouter.use('*', tenantMiddleware)
+vendorsRouter.use('*', requireModuleAccess('procurement:read', 'procurement:write'))
 
 const createVendorSchema = z.object({
   companyName: z.string().min(1).max(255),

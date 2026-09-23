@@ -4,6 +4,7 @@ import { eq, and, gte, lte, SQL } from 'drizzle-orm'
 import { db } from '../../../db'
 import { attendances } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
+import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 
 type Variables = AuthVariables & TenantVariables
@@ -11,6 +12,7 @@ type Variables = AuthVariables & TenantVariables
 const attendancesRouter = new Hono<{ Variables: Variables }>()
 attendancesRouter.use('*', authMiddleware)
 attendancesRouter.use('*', tenantMiddleware)
+attendancesRouter.use('*', requireModuleAccess('hris:read', 'hris:write'))
 
 const checkInSchema = z.object({
   clockIn: z.string().optional(),

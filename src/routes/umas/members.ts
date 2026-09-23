@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { eq, and } from 'drizzle-orm'
 import { db } from '../../db'
-import { tenantMembers, users, tenants, positions, roles, userRoles } from '../../db/schema'
+import { tenantMembers, users, tenants, positions, roles, userRoles, rolePermissions, permissions } from '../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../middleware/auth'
 import { tenantMiddleware, type TenantVariables } from '../../middleware/tenant'
 
@@ -94,7 +94,19 @@ membersRouter.get('/me', async (c) => {
     return c.json({ error: 'Not a member of this tenant' }, 404)
   }
 
-  return c.json({ membership })
+  // Tenant-scoped permissions for UI gating (menus, buttons).
+  const permRows = await db
+    .select({ permissionName: permissions.name })
+    .from(userRoles)
+    .innerJoin(roles, eq(userRoles.roleId, roles.id))
+    .innerJoin(rolePermissions, eq(rolePermissions.roleId, roles.id))
+    .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
+    .where(and(eq(userRoles.userId, authUser.id), eq(userRoles.tenantId, tenant.tenantId)))
+
+  return c.json({
+    membership,
+    permissions: [...new Set(permRows.map((p) => p.permissionName))],
+  })
 })
 
 membersRouter.post('/', async (c) => {

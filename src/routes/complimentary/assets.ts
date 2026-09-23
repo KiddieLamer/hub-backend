@@ -4,6 +4,7 @@ import { eq, and, SQL, ilike } from 'drizzle-orm'
 import { db } from '../../db'
 import { assets, assetLogs, assetMaintenances } from '../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../middleware/auth'
+import { requireModuleAccess } from '../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../middleware/tenant'
 
 type Variables = AuthVariables & TenantVariables
@@ -11,6 +12,7 @@ type Variables = AuthVariables & TenantVariables
 const assetsRouter = new Hono<{ Variables: Variables }>()
 assetsRouter.use('*', authMiddleware)
 assetsRouter.use('*', tenantMiddleware)
+assetsRouter.use('*', requireModuleAccess('assets:read', 'assets:write'))
 
 const createAssetSchema = z.object({
   assetCode: z.string().min(1).max(100),

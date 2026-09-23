@@ -4,6 +4,7 @@ import { eq, and, SQL, ilike } from 'drizzle-orm'
 import { db } from '../../../db'
 import { pos, poItems, stockMovements, catalogItems } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
+import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 
 type Variables = AuthVariables & TenantVariables
@@ -11,6 +12,7 @@ type Variables = AuthVariables & TenantVariables
 const posRouter = new Hono<{ Variables: Variables }>()
 posRouter.use('*', authMiddleware)
 posRouter.use('*', tenantMiddleware)
+posRouter.use('*', requireModuleAccess('procurement:read', 'procurement:write'))
 
 const poStatusSchema = z.object({
   status: z.enum(['draft', 'pending_approval', 'approved', 'ordered', 'partially_received', 'received', 'cancelled']),

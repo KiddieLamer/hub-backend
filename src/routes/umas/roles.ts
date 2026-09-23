@@ -1,10 +1,11 @@
 import { Hono } from 'hono'
 import { db } from '../../db'
-import { roles, rolePermissions, userRoles, tenantMembers, users } from '../../db/schema'
+import { roles, permissions, rolePermissions, userRoles, tenantMembers, users } from '../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../middleware/auth'
+import { requireModuleAccess } from '../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../middleware/tenant'
 import { z } from 'zod'
-import { eq, and } from 'drizzle-orm'
+import { eq, and, inArray, count } from 'drizzle-orm'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -12,13 +13,51 @@ const rolesRouter = new Hono<{ Variables: Variables }>()
 
 rolesRouter.use('*', authMiddleware)
 rolesRouter.use('*', tenantMiddleware)
+rolesRouter.use('*', requireModuleAccess('roles:read', 'roles:write'))
 
 rolesRouter.get('/', async (c) => {
   const tenant = c.get('tenant')
   const tenantRoles = await db.query.roles.findMany({
     where: eq(roles.tenantId, tenant.tenantId),
   })
-  return c.json({ roles: tenantRoles })
+
+  const roleIds = tenantRoles.map((r) => r.id)
+  let permMap: Record<string, { id: string; name: string }[]> = {}
+  if (roleIds.length > 0) {
+    const rows = await db
+      .select({
+        roleId: rolePermissions.roleId,
+        permissionId: permissions.id,
+        permissionName: permissions.name,
+      })
+      .from(rolePermissions)
+      .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
+      .innerJoin(roles, eq(rolePermissions.roleId, roles.id))
+      .where(and(
+        eq(roles.tenantId, tenant.tenantId),
+        inArray(rolePermissions.roleId, roleIds),
+      ))
+    for (const row of rows) {
+      ;(permMap[row.roleId] ||= []).push({ id: row.permissionId, name: row.permissionName })
+    }
+  }
+
+  const memberCounts = await db
+    .select({ roleId: userRoles.roleId, count: count() })
+    .from(userRoles)
+    .where(eq(userRoles.tenantId, tenant.tenantId))
+    .groupBy(userRoles.roleId)
+  const countByRole: Record<string, number> = {}
+  for (const row of memberCounts) countByRole[row.roleId] = row.count
+
+  return c.json({
+    roles: tenantRoles.map((r) => ({
+      ...r,
+      permissions: permMap[r.id] || [],
+      permissionIds: (permMap[r.id] || []).map((p) => p.id),
+      memberCount: countByRole[r.id] || 0,
+    })),
+  })
 })
 
 rolesRouter.post('/', async (c) => {
@@ -98,6 +137,71 @@ rolesRouter.delete('/:id', async (c) => {
 rolesRouter.get('/permissions', async (c) => {
   const allPermissions = await db.query.permissions.findMany()
   return c.json({ permissions: allPermissions })
+})
+
+// Replace a role's permission set.
+rolesRouter.patch('/:id/permissions', async (c) => {
+  const tenant = c.get('tenant')
+  const user = c.get('user')
+  const { id } = c.req.param()
+
+  if (user.platformRole !== 'hub-admin' && !['owner', 'admin'].includes(tenant.tenantRole)) {
+    return c.json({ error: 'Insufficient permissions' }, 403)
+  }
+
+  const role = await db.query.roles.findFirst({
+    where: and(eq(roles.id, id), eq(roles.tenantId, tenant.tenantId)),
+  })
+  if (!role) {
+    return c.json({ error: 'Role not found' }, 404)
+  }
+
+  const body = z.object({ permissionIds: z.array(z.string().uuid()) }).parse(await c.req.json())
+
+  const permIds = [...new Set(body.permissionIds)]
+  if (permIds.length > 0) {
+    const valid = await db.query.permissions.findMany({
+      where: (permissions, { inArray }) => inArray(permissions.id, permIds),
+      columns: { id: true },
+    })
+    const validIds = new Set(valid.map((p) => p.id))
+    const invalid = permIds.filter((pid) => !validIds.has(pid))
+    if (invalid.length > 0) {
+      return c.json({ error: 'Unknown permission ids', invalid }, 400)
+    }
+  }
+
+  await db.delete(rolePermissions).where(eq(rolePermissions.roleId, id))
+  if (permIds.length > 0) {
+    await db.insert(rolePermissions).values(permIds.map((permissionId) => ({ roleId: id, permissionId })))
+  }
+
+  return c.json({ success: true })
+})
+
+// List members holding a role in this tenant.
+rolesRouter.get('/:id/members', async (c) => {
+  const tenant = c.get('tenant')
+  const { id } = c.req.param()
+
+  const role = await db.query.roles.findFirst({
+    where: and(eq(roles.id, id), eq(roles.tenantId, tenant.tenantId)),
+  })
+  if (!role) {
+    return c.json({ error: 'Role not found' }, 404)
+  }
+
+  const rows = await db
+    .select({
+      userId: userRoles.userId,
+      userFullName: users.fullName,
+      userEmail: users.email,
+    })
+    .from(userRoles)
+    .innerJoin(users, eq(userRoles.userId, users.id))
+    .where(and(eq(userRoles.roleId, id), eq(userRoles.tenantId, tenant.tenantId)))
+
+  return c.json({ members: rows })
 })
 
 // Assign an RBAC role to a tenant member (tenant-scoped).

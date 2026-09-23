@@ -4,6 +4,7 @@ import { eq, and, SQL, ilike } from 'drizzle-orm'
 import { db } from '../../../db'
 import { invoices, invoiceItems, paymentsReceived } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
+import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 
 type Variables = AuthVariables & TenantVariables
@@ -11,6 +12,7 @@ type Variables = AuthVariables & TenantVariables
 const invoicesRouter = new Hono<{ Variables: Variables }>()
 invoicesRouter.use('*', authMiddleware)
 invoicesRouter.use('*', tenantMiddleware)
+invoicesRouter.use('*', requireModuleAccess('finance:read', 'finance:write'))
 
 const createInvoiceSchema = z.object({
   invoiceNumber: z.string().min(1).max(100),

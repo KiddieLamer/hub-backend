@@ -4,6 +4,7 @@ import { eq, and, SQL } from 'drizzle-orm'
 import { db } from '../../../db'
 import { payrollProfiles, payrolls, payrollItems } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
+import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 
 type Variables = AuthVariables & TenantVariables
@@ -11,6 +12,7 @@ type Variables = AuthVariables & TenantVariables
 const payrollRouter = new Hono<{ Variables: Variables }>()
 payrollRouter.use('*', authMiddleware)
 payrollRouter.use('*', tenantMiddleware)
+payrollRouter.use('*', requireModuleAccess('hris:read', 'hris:write'))
 
 const payrollProfileSchema = z.object({
   basicSalary: z.number().min(0),

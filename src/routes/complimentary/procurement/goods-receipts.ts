@@ -4,6 +4,7 @@ import { eq, and, SQL, inArray } from 'drizzle-orm'
 import { db } from '../../../db'
 import { goodsReceipts, purchaseOrders } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
+import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 
 type Variables = AuthVariables & TenantVariables
@@ -11,6 +12,7 @@ type Variables = AuthVariables & TenantVariables
 const goodsReceiptsRouter = new Hono<{ Variables: Variables }>()
 goodsReceiptsRouter.use('*', authMiddleware)
 goodsReceiptsRouter.use('*', tenantMiddleware)
+goodsReceiptsRouter.use('*', requireModuleAccess('procurement:read', 'procurement:write'))
 
 const createGRSchema = z.object({
   grNumber: z.string().min(1).max(100),

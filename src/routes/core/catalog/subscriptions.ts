@@ -4,6 +4,7 @@ import { eq, and, SQL, ilike } from 'drizzle-orm'
 import { db } from '../../../db'
 import { clientSubscriptions, clientQuotaBalances } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
+import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 
 type Variables = AuthVariables & TenantVariables
@@ -11,6 +12,7 @@ type Variables = AuthVariables & TenantVariables
 const subscriptionsRouter = new Hono<{ Variables: Variables }>()
 subscriptionsRouter.use('*', authMiddleware)
 subscriptionsRouter.use('*', tenantMiddleware)
+subscriptionsRouter.use('*', requireModuleAccess('catalog:read', 'catalog:write'))
 
 const createSubscriptionSchema = z.object({
   subscriptionCode: z.string().min(1).max(100),

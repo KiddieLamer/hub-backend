@@ -4,6 +4,7 @@ import { eq, and } from 'drizzle-orm'
 import { db } from '../../../db'
 import { leaveTypes, leaveRequests } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
+import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 
 type Variables = AuthVariables & TenantVariables
@@ -11,6 +12,7 @@ type Variables = AuthVariables & TenantVariables
 const leavesRouter = new Hono<{ Variables: Variables }>()
 leavesRouter.use('*', authMiddleware)
 leavesRouter.use('*', tenantMiddleware)
+leavesRouter.use('*', requireModuleAccess('hris:read', 'hris:write'))
 
 const leaveTypeSchema = z.object({
   name: z.string().min(1).max(100),
@@ -124,7 +126,7 @@ leavesRouter.delete('/requests/:id', async (c) => {
   return c.json({ message: 'Leave request deleted' })
 })
 
-leavesRouter.patch('/requests/:id/approve', async (c) => {
+leavesRouter.patch('/requests/:id/approve', requireModuleAccess('hris:approve', 'hris:approve'), async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const { id } = c.req.param()
@@ -146,7 +148,7 @@ leavesRouter.patch('/requests/:id/approve', async (c) => {
   return c.json({ leaveRequest: updated })
 })
 
-leavesRouter.patch('/requests/:id/reject', async (c) => {
+leavesRouter.patch('/requests/:id/reject', requireModuleAccess('hris:approve', 'hris:approve'), async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const { id } = c.req.param()

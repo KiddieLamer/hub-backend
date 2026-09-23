@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm'
 import { db } from '../../db'
 import { shifts } from '../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../middleware/auth'
+import { requireModuleAccess } from '../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../middleware/tenant'
 
 type Variables = AuthVariables & TenantVariables
@@ -11,6 +12,7 @@ type Variables = AuthVariables & TenantVariables
 const shiftsRouter = new Hono<{ Variables: Variables }>()
 shiftsRouter.use('*', authMiddleware)
 shiftsRouter.use('*', tenantMiddleware)
+shiftsRouter.use('*', requireModuleAccess('hris:read', 'hris:write'))
 
 const createShiftSchema = z.object({
   name: z.string().min(1).max(100),

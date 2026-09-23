@@ -4,6 +4,7 @@ import { eq, and, SQL, ilike } from 'drizzle-orm'
 import { db } from '../../../db'
 import { warrantiesInsurances, warrantyClaims } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
+import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 
 type Variables = AuthVariables & TenantVariables
@@ -11,6 +12,7 @@ type Variables = AuthVariables & TenantVariables
 const warrantiesRouter = new Hono<{ Variables: Variables }>()
 warrantiesRouter.use('*', authMiddleware)
 warrantiesRouter.use('*', tenantMiddleware)
+warrantiesRouter.use('*', requireModuleAccess('crm:read', 'crm:write'))
 
 const createWarrantySchema = z.object({
   policyNumber: z.string().min(1).max(100),

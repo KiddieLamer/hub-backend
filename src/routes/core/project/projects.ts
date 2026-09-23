@@ -4,6 +4,7 @@ import { eq, and, SQL, ilike } from 'drizzle-orm'
 import { db } from '../../../db'
 import { projects, projectMembers, projectMilestones, kanbanColumns } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
+import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 
 type Variables = AuthVariables & TenantVariables
@@ -11,6 +12,7 @@ type Variables = AuthVariables & TenantVariables
 const projectsRouter = new Hono<{ Variables: Variables }>()
 projectsRouter.use('*', authMiddleware)
 projectsRouter.use('*', tenantMiddleware)
+projectsRouter.use('*', requireModuleAccess('projects:read', 'projects:write'))
 
 const createProjectSchema = z.object({
   projectCode: z.string().min(1).max(100),

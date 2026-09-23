@@ -4,6 +4,7 @@ import { eq, and, SQL } from 'drizzle-orm'
 import { db } from '../../../db'
 import { departmentBudgets } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
+import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 
 type Variables = AuthVariables & TenantVariables
@@ -11,6 +12,7 @@ type Variables = AuthVariables & TenantVariables
 const departmentBudgetsRouter = new Hono<{ Variables: Variables }>()
 departmentBudgetsRouter.use('*', authMiddleware)
 departmentBudgetsRouter.use('*', tenantMiddleware)
+departmentBudgetsRouter.use('*', requireModuleAccess('finance:read', 'finance:write'))
 
 const createBudgetSchema = z.object({
   department: z.string().min(1).max(100),

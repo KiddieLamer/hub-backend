@@ -4,6 +4,7 @@ import { eq, and, inArray, SQL } from 'drizzle-orm'
 import { db } from '../../../db'
 import { tasks, taskAssignees, taskComments, taskTagMappings, projects } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
+import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 
 type Variables = AuthVariables & TenantVariables
@@ -11,6 +12,7 @@ type Variables = AuthVariables & TenantVariables
 const tasksRouter = new Hono<{ Variables: Variables }>()
 tasksRouter.use('*', authMiddleware)
 tasksRouter.use('*', tenantMiddleware)
+tasksRouter.use('*', requireModuleAccess('projects:read', 'projects:write'))
 
 const createTaskSchema = z.object({
   projectId: z.string().uuid(),

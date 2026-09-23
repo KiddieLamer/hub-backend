@@ -4,6 +4,7 @@ import { eq, and, or, ilike } from 'drizzle-orm'
 import { db } from '../../../db'
 import { quotations, quotationItems, invoices, projects } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
+import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 
 type Variables = AuthVariables & TenantVariables
@@ -12,6 +13,7 @@ const quotationRouter = new Hono<{ Variables: Variables }>()
 
 quotationRouter.use('*', authMiddleware)
 quotationRouter.use('*', tenantMiddleware)
+quotationRouter.use('*', requireModuleAccess('crm:read', 'crm:write'))
 
 const createItemSchema = z.object({
   catalogItemId: z.string().uuid().nullable().optional(),

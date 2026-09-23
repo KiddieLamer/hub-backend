@@ -4,6 +4,7 @@ import { eq, and, desc, asc } from 'drizzle-orm'
 import { db } from '../../db'
 import { positions, roles, tenantMembers } from '../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../middleware/auth'
+import { requireModuleAccess } from '../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../middleware/tenant'
 
 type Variables = AuthVariables & TenantVariables
@@ -12,6 +13,7 @@ const positionsRouter = new Hono<{ Variables: Variables }>()
 
 positionsRouter.use('*', authMiddleware)
 positionsRouter.use('*', tenantMiddleware)
+positionsRouter.use('*', requireModuleAccess('roles:read', 'roles:write'))
 
 function canManage(tenantRole: string, platformRole: string | null) {
   return platformRole === 'hub-admin' || ['owner', 'admin'].includes(tenantRole)

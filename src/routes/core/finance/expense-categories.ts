@@ -4,6 +4,7 @@ import { eq, and } from 'drizzle-orm'
 import { db } from '../../../db'
 import { expenseCategories } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
+import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 
 type Variables = AuthVariables & TenantVariables
@@ -11,6 +12,7 @@ type Variables = AuthVariables & TenantVariables
 const expenseCategoriesRouter = new Hono<{ Variables: Variables }>()
 expenseCategoriesRouter.use('*', authMiddleware)
 expenseCategoriesRouter.use('*', tenantMiddleware)
+expenseCategoriesRouter.use('*', requireModuleAccess('finance:read', 'finance:write'))
 
 const createCategorySchema = z.object({
   name: z.string().min(1).max(100),

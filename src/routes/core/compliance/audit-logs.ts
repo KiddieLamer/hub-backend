@@ -3,6 +3,7 @@ import { eq, and, SQL, ilike } from 'drizzle-orm'
 import { db } from '../../../db'
 import { systemAuditLogs } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
+import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 
 type Variables = AuthVariables & TenantVariables
@@ -10,6 +11,7 @@ type Variables = AuthVariables & TenantVariables
 const auditLogsRouter = new Hono<{ Variables: Variables }>()
 auditLogsRouter.use('*', authMiddleware)
 auditLogsRouter.use('*', tenantMiddleware)
+auditLogsRouter.use('*', requireModuleAccess('compliance:read', 'compliance:write'))
 
 // List audit logs
 auditLogsRouter.get('/', async (c) => {

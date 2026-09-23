@@ -4,6 +4,7 @@ import { eq, and, SQL, ilike } from 'drizzle-orm'
 import { db } from '../../../db'
 import { purchaseRequests, purchaseRequestItems } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
+import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 
 type Variables = AuthVariables & TenantVariables
@@ -11,6 +12,7 @@ type Variables = AuthVariables & TenantVariables
 const purchaseRequestsRouter = new Hono<{ Variables: Variables }>()
 purchaseRequestsRouter.use('*', authMiddleware)
 purchaseRequestsRouter.use('*', tenantMiddleware)
+purchaseRequestsRouter.use('*', requireModuleAccess('procurement:read', 'procurement:write'))
 
 const createPRSchema = z.object({
   prNumber: z.string().min(1).max(100),

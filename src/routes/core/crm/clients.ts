@@ -4,6 +4,7 @@ import { eq, and, or, ilike } from 'drizzle-orm'
 import { db } from '../../../db'
 import { clients } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
+import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 
 type Variables = AuthVariables & TenantVariables
@@ -12,6 +13,7 @@ const clientsRouter = new Hono<{ Variables: Variables }>()
 
 clientsRouter.use('*', authMiddleware)
 clientsRouter.use('*', tenantMiddleware)
+clientsRouter.use('*', requireModuleAccess('crm:read', 'crm:write'))
 
 const createClientSchema = z.object({
   name: z.string().min(1).max(255),
