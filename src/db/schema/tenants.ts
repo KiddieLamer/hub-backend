@@ -14,6 +14,10 @@ export const tenants = pgTable('tenants', {
   // 2. Isolasi Database (Multi-Tenant)
   dbSchema: varchar('db_schema', { length: 100 }).notNull().unique(),
 
+  // Industry category for role/position templates (Fase 2).
+  // jasa-lapangan | hotel | konsultan | umum
+  category: varchar('category', { length: 50 }).default('umum').notNull(),
+
   // 3. Legalitas & Kepatuhan
   taxId: varchar('tax_id', { length: 50 }),
   address: text('address'),

@@ -2,7 +2,8 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { eq, and, isNull } from 'drizzle-orm'
 import { db } from '../../db'
-import { tenants, tenantMembers, users, roles, rolePermissions } from '../../db/schema'
+import { tenants, tenantMembers, users } from '../../db/schema'
+import { TENANT_CATEGORIES, normalizeCategory, seedTenantTemplate } from '../../lib/tenant-templates'
 import { authMiddleware, type Variables as AuthVariables } from '../../middleware/auth'
 import { requireHubAdmin } from '../../middleware/platform'
 
@@ -24,6 +25,7 @@ const createTenantSchema = z.object({
   logoUrl: z.string().optional(),
   gmapLink: z.string().optional(),
   gdriveLink: z.string().optional(),
+  category: z.enum(TENANT_CATEGORIES).optional().default('umum'),
 })
 
 const updateTenantSchema = z.object({
@@ -80,63 +82,6 @@ tenantsRouter.get('/all', requireHubAdmin, async (c) => {
   return c.json({ tenants: allTenants })
 })
 
-// Default RBAC roles for a freshly created tenant.
-// Keep in sync with src/migrations/rbac-permissions-and-default-roles.sql.
-const DEFAULT_ROLE_DEFS: { name: string; description: string; perms: string[] }[] = [
-  {
-    name: 'Staff',
-    description: 'Default role: read access plus self-service writes',
-    perms: [
-      'users:read', 'roles:read',
-      'crm:read', 'finance:read', 'hris:read', 'hris:write',
-      'projects:read', 'procurement:read', 'catalog:read',
-      'assets:read', 'compliance:read', 'compliance:write',
-    ],
-  },
-  {
-    name: 'Manager',
-    description: 'Default role: full write access plus approvals',
-    perms: [
-      'users:read', 'roles:read', 'roles:write',
-      'crm:read', 'crm:write', 'finance:read', 'finance:write',
-      'hris:read', 'hris:write', 'hris:approve',
-      'projects:read', 'projects:write',
-      'procurement:read', 'procurement:write',
-      'catalog:read', 'catalog:write',
-      'assets:read', 'assets:write',
-      'compliance:read', 'compliance:write',
-    ],
-  },
-]
-
-async function seedDefaultRoles(tenantId: string) {
-  const permRows = await db.query.permissions.findMany({
-    columns: { id: true, name: true },
-  })
-  const permByName = new Map(permRows.map((p) => [p.name, p.id]))
-
-  for (const def of DEFAULT_ROLE_DEFS) {
-    const existing = await db.query.roles.findFirst({
-      where: and(eq(roles.tenantId, tenantId), eq(roles.name, def.name)),
-    })
-    if (existing) continue
-
-    const [role] = await db.insert(roles).values({
-      tenantId,
-      name: def.name,
-      description: def.description,
-    }).returning()
-
-    const pairs = def.perms
-      .map((n) => permByName.get(n))
-      .filter((id): id is string => Boolean(id))
-      .map((permissionId) => ({ roleId: role.id, permissionId }))
-    if (pairs.length > 0) {
-      await db.insert(rolePermissions).values(pairs)
-    }
-  }
-}
-
 tenantsRouter.post('/', requireHubAdmin, async (c) => {
   const body = createTenantSchema.parse(await c.req.json())
 
@@ -155,11 +100,30 @@ tenantsRouter.post('/', requireHubAdmin, async (c) => {
     dbSchema: dbSchemaName,
   }).returning()
 
-  // Seed default Staff/Manager roles so permissions work out of the box.
-  // (Same sets as src/migrations/rbac-permissions-and-default-roles.sql.)
-  await seedDefaultRoles(tenant.id)
+  // Seed industry template: roles + positions + default mapping.
+  await seedTenantTemplate(tenant.id, body.category)
 
   return c.json({ tenant }, 201)
+})
+
+// Backfill industry template into an existing tenant (hub-admin only).
+// Idempotent: existing roles/positions (by name) are skipped, never overwritten.
+tenantsRouter.post('/:id/seed-template', requireHubAdmin, async (c) => {
+  const { id } = c.req.param()
+  const raw = await c.req.json().catch(() => ({}))
+  const parsed = z.object({ category: z.enum(TENANT_CATEGORIES).optional() }).parse(raw)
+
+  const tenant = await db.query.tenants.findFirst({
+    where: eq(tenants.id, id),
+  })
+  if (!tenant) {
+    return c.json({ error: 'Tenant not found' }, 404)
+  }
+
+  const category = parsed.category ?? normalizeCategory((tenant as { category?: string }).category)
+  const result = await seedTenantTemplate(id, category)
+
+  return c.json({ tenantId: id, ...result })
 })
 
 tenantsRouter.get('/current', async (c) => {
