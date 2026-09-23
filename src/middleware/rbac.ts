@@ -35,9 +35,10 @@ export function requireRole(...requiredRoles: string[]) {
 
 // Module-level access gate for tenant feature routers.
 // GET/HEAD/OPTIONS require the read permission, mutations require write.
-// Bypass: hub-admin (platform) and tenant owner (owns the company).
-// Everyone else is checked against their tenant-scoped permissions
-// (loaded per X-Tenant-ID by tenantMiddleware).
+// Bypass: hub-admin (platform), tenant owner and admin (they run the
+// company — "Owner & Admin bisa semua"). Everyone else is checked
+// against their tenant-scoped permissions (loaded per X-Tenant-ID
+// by tenantMiddleware).
 export function requireModuleAccess(readPermission: string, writePermission: string) {
   return async (c: Context, next: Next) => {
     const user = c.get('user') as AuthUser | undefined
@@ -53,7 +54,8 @@ export function requireModuleAccess(readPermission: string, writePermission: str
     if (
       user.platformRole === 'hub-admin' ||
       tenant.tenantRole === 'hub-admin' ||
-      tenant.tenantRole === 'owner'
+      tenant.tenantRole === 'owner' ||
+      tenant.tenantRole === 'admin'
     ) {
       await next()
       return
