@@ -4,7 +4,7 @@ import { eq, and } from 'drizzle-orm'
 import { db } from '../../../db'
 import { overtimeRequests } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
-import { requireModuleAccess } from '../../../middleware/rbac'
+import { requireModuleAccessExcept } from '../../../middleware/rbac'
 import { requireApprover } from '../../../lib/approvals'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 
@@ -13,7 +13,7 @@ type Variables = AuthVariables & TenantVariables
 const overtimeRouter = new Hono<{ Variables: Variables }>()
 overtimeRouter.use('*', authMiddleware)
 overtimeRouter.use('*', tenantMiddleware)
-overtimeRouter.use('*', requireModuleAccess('hris:read', 'hris:write'))
+overtimeRouter.use('*', requireModuleAccessExcept('hris:read', 'hris:write', [{ suffix: '/approve' }, { suffix: '/reject' }]))
 
 const overtimeSchema = z.object({
   overtimeDate: z.string(),
@@ -110,7 +110,10 @@ async function overtimeRequester(c: Context) {
   return req ? { requesterUserId: req.userId } : null
 }
 
-overtimeRouter.patch('/:id/approve', requireApprover(overtimeRequester), async (c) => {
+overtimeRouter.patch(
+  '/:id/approve',
+  requireApprover(overtimeRequester, { permission: 'hris:approve' }),
+  async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const { id } = c.req.param()
@@ -130,9 +133,13 @@ overtimeRouter.patch('/:id/approve', requireApprover(overtimeRequester), async (
   }
 
   return c.json({ overtimeRequest: updated })
-})
+  },
+)
 
-overtimeRouter.patch('/:id/reject', requireApprover(overtimeRequester), async (c) => {
+overtimeRouter.patch(
+  '/:id/reject',
+  requireApprover(overtimeRequester, { permission: 'hris:approve' }),
+  async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const { id } = c.req.param()
@@ -152,6 +159,7 @@ overtimeRouter.patch('/:id/reject', requireApprover(overtimeRequester), async (c
   }
 
   return c.json({ overtimeRequest: updated })
-})
+  },
+)
 
 export default overtimeRouter

@@ -1,5 +1,5 @@
 import { db } from '../db'
-import { roles, permissions, rolePermissions, positions } from '../db/schema'
+import { roles, rolePermissions, positions } from '../db/schema'
 import { eq, and } from 'drizzle-orm'
 
 // Fase 2: industry templates. Picked at tenant creation, copied as the

@@ -4,7 +4,8 @@ import { eq, and, SQL, ilike } from 'drizzle-orm'
 import { db } from '../../../db'
 import { purchaseRequests, purchaseRequestItems } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
-import { requireModuleAccess } from '../../../middleware/rbac'
+import { requireModuleAccessExcept } from '../../../middleware/rbac'
+import { requireApprover } from '../../../lib/approvals'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 
 type Variables = AuthVariables & TenantVariables
@@ -12,7 +13,7 @@ type Variables = AuthVariables & TenantVariables
 const purchaseRequestsRouter = new Hono<{ Variables: Variables }>()
 purchaseRequestsRouter.use('*', authMiddleware)
 purchaseRequestsRouter.use('*', tenantMiddleware)
-purchaseRequestsRouter.use('*', requireModuleAccess('procurement:read', 'procurement:write'))
+purchaseRequestsRouter.use('*', requireModuleAccessExcept('procurement:read', 'procurement:write', [{ suffix: '/approve' }]))
 
 const createPRSchema = z.object({
   prNumber: z.string().min(1).max(100),
@@ -167,35 +168,76 @@ purchaseRequestsRouter.patch('/:id', async (c) => {
   return c.json({ purchaseRequest: updated })
 })
 
-// Approve/Reject PR
-purchaseRequestsRouter.post('/:id/approve', async (c) => {
-  const tenant = c.get('tenant')
-  const authUser = c.get('user')
+// Submit draft → submitted (enters RACI approval queue).
+purchaseRequestsRouter.post('/:id/submit', async (c) => {
+  const tenant = c.get('tenant') as { tenantId: string; tenantRole?: string }
+  const authUser = c.get('user') as { id: string; platformRole?: string | null }
   const { id } = c.req.param()
-  const body = approveSchema.parse(await c.req.json())
 
-  const pr = await db.query.purchaseRequests.findFirst({
+  const existing = await db.query.purchaseRequests.findFirst({
     where: and(eq(purchaseRequests.id, id), eq(purchaseRequests.tenantId, tenant.tenantId)),
+    columns: { id: true, status: true, requesterId: true },
   })
+  if (!existing) return c.json({ error: 'Purchase request not found' }, 404)
+  if (existing.status !== 'draft') return c.json({ error: 'PR is not in draft status' }, 400)
 
-  if (!pr) return c.json({ error: 'Purchase request not found' }, 404)
-  if (pr.status !== 'submitted') return c.json({ error: 'PR is not in submitted status' }, 400)
+  const canSubmit =
+    authUser.platformRole === 'hub-admin' ||
+    tenant.tenantRole === 'owner' ||
+    tenant.tenantRole === 'admin' ||
+    existing.requesterId === authUser.id
+  if (!canSubmit) return c.json({ error: 'Hanya pengaju yang dapat mengajukan' }, 403)
 
-  const newStatus = body.approved ? 'approved' : 'rejected'
   const [updated] = await db
     .update(purchaseRequests)
-    .set({
-      status: newStatus,
-      approvedBy: body.approved ? authUser.id : null,
-      approvalDate: body.approved ? new Date() : null,
-      rejectionReason: body.approved ? null : body.rejectionReason,
-      updatedAt: new Date(),
-    })
+    .set({ status: 'submitted', updatedAt: new Date() })
     .where(and(eq(purchaseRequests.id, id), eq(purchaseRequests.tenantId, tenant.tenantId)))
     .returning()
 
   return c.json({ purchaseRequest: updated })
 })
+
+// Approve/Reject PR — RACI: parent chain; amount ≥ threshold escalates to owner.
+purchaseRequestsRouter.post(
+  '/:id/approve',
+  requireApprover(async (c) => {
+    const tenant = c.get('tenant') as { tenantId: string }
+    const { id } = c.req.param()
+    const pr = await db.query.purchaseRequests.findFirst({
+      where: and(eq(purchaseRequests.id, id), eq(purchaseRequests.tenantId, tenant.tenantId)),
+      columns: { requesterId: true, estimatedTotalCost: true },
+    })
+    return pr ? { requesterUserId: pr.requesterId, amount: pr.estimatedTotalCost } : null
+  }),
+  async (c) => {
+    const tenant = c.get('tenant')
+    const authUser = c.get('user')
+    const { id } = c.req.param()
+    const body = approveSchema.parse(await c.req.json())
+
+    const pr = await db.query.purchaseRequests.findFirst({
+      where: and(eq(purchaseRequests.id, id), eq(purchaseRequests.tenantId, tenant.tenantId)),
+    })
+
+    if (!pr) return c.json({ error: 'Purchase request not found' }, 404)
+    if (pr.status !== 'submitted') return c.json({ error: 'PR is not in submitted status' }, 400)
+
+    const newStatus = body.approved ? 'approved' : 'rejected'
+    const [updated] = await db
+      .update(purchaseRequests)
+      .set({
+        status: newStatus,
+        approvedBy: body.approved ? authUser.id : null,
+        approvalDate: body.approved ? new Date() : null,
+        rejectionReason: body.approved ? null : body.rejectionReason,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(purchaseRequests.id, id), eq(purchaseRequests.tenantId, tenant.tenantId)))
+      .returning()
+
+    return c.json({ purchaseRequest: updated })
+  },
+)
 
 // Delete PR (soft delete)
 purchaseRequestsRouter.delete('/:id', async (c) => {

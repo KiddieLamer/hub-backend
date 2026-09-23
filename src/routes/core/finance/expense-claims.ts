@@ -4,7 +4,8 @@ import { eq, and, SQL, ilike } from 'drizzle-orm'
 import { db } from '../../../db'
 import { expenseClaims, departmentBudgets } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
-import { requireModuleAccess } from '../../../middleware/rbac'
+import { requireModuleAccessExcept } from '../../../middleware/rbac'
+import { requireApprover } from '../../../lib/approvals'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 
 type Variables = AuthVariables & TenantVariables
@@ -12,7 +13,7 @@ type Variables = AuthVariables & TenantVariables
 const expenseClaimsRouter = new Hono<{ Variables: Variables }>()
 expenseClaimsRouter.use('*', authMiddleware)
 expenseClaimsRouter.use('*', tenantMiddleware)
-expenseClaimsRouter.use('*', requireModuleAccess('finance:read', 'finance:write'))
+expenseClaimsRouter.use('*', requireModuleAccessExcept('finance:read', 'finance:write', [{ suffix: '/approve' }]))
 
 const createClaimSchema = z.object({
   expenseNumber: z.string().min(1).max(100),
@@ -130,8 +131,49 @@ expenseClaimsRouter.patch('/:id', async (c) => {
   return c.json({ claim: updated })
 })
 
-// Approve/Reject claim
-expenseClaimsRouter.post('/:id/approve', async (c) => {
+// Submit draft → submitted (enters RACI approval queue).
+expenseClaimsRouter.post('/:id/submit', async (c) => {
+  const tenant = c.get('tenant') as { tenantId: string; tenantRole?: string }
+  const authUser = c.get('user') as { id: string; platformRole?: string | null }
+  const { id } = c.req.param()
+  await c.req.json().catch(() => ({}))
+
+  const existing = await db.query.expenseClaims.findFirst({
+    where: and(eq(expenseClaims.id, id), eq(expenseClaims.tenantId, tenant.tenantId)),
+    columns: { id: true, status: true, submittedBy: true },
+  })
+  if (!existing) return c.json({ error: 'Expense claim not found' }, 404)
+  if (existing.status !== 'draft') return c.json({ error: 'Claim is not in draft status' }, 400)
+
+  const canSubmit =
+    authUser.platformRole === 'hub-admin' ||
+    tenant.tenantRole === 'owner' ||
+    tenant.tenantRole === 'admin' ||
+    existing.submittedBy === authUser.id
+  if (!canSubmit) return c.json({ error: 'Hanya pengaju yang dapat mengajukan' }, 403)
+
+  const [updated] = await db
+    .update(expenseClaims)
+    .set({ status: 'submitted', updatedAt: new Date() })
+    .where(and(eq(expenseClaims.id, id), eq(expenseClaims.tenantId, tenant.tenantId)))
+    .returning()
+
+  return c.json({ claim: updated })
+})
+
+// Approve/Reject claim — RACI: parent chain of the submitter (owner/admin bypass).
+expenseClaimsRouter.post(
+  '/:id/approve',
+  requireApprover(async (c) => {
+    const tenant = c.get('tenant') as { tenantId: string }
+    const { id } = c.req.param()
+    const claim = await db.query.expenseClaims.findFirst({
+      where: and(eq(expenseClaims.id, id), eq(expenseClaims.tenantId, tenant.tenantId)),
+      columns: { submittedBy: true, amount: true },
+    })
+    return claim ? { requesterUserId: claim.submittedBy, amount: claim.amount } : null
+  }),
+  async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const { id } = c.req.param()
@@ -183,7 +225,8 @@ expenseClaimsRouter.post('/:id/approve', async (c) => {
   }
 
   return c.json({ claim: updated })
-})
+  },
+)
 
 // Mark as paid
 expenseClaimsRouter.post('/:id/pay', async (c) => {

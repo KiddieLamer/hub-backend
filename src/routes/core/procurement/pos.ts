@@ -4,7 +4,8 @@ import { eq, and, SQL, ilike } from 'drizzle-orm'
 import { db } from '../../../db'
 import { pos, poItems, stockMovements, catalogItems } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
-import { requireModuleAccess } from '../../../middleware/rbac'
+import { requireModuleAccessExcept, hasModulePermission } from '../../../middleware/rbac'
+import { checkApprover } from '../../../lib/approvals'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 
 type Variables = AuthVariables & TenantVariables
@@ -12,7 +13,7 @@ type Variables = AuthVariables & TenantVariables
 const posRouter = new Hono<{ Variables: Variables }>()
 posRouter.use('*', authMiddleware)
 posRouter.use('*', tenantMiddleware)
-posRouter.use('*', requireModuleAccess('procurement:read', 'procurement:write'))
+posRouter.use('*', requireModuleAccessExcept('procurement:read', 'procurement:write', [{ suffix: '/status' }]))
 
 const poStatusSchema = z.object({
   status: z.enum(['draft', 'pending_approval', 'approved', 'ordered', 'partially_received', 'received', 'cancelled']),
@@ -132,12 +133,39 @@ posRouter.post('/', async (c) => {
   return c.json({ purchaseOrder: po }, 201)
 })
 
-// Update PO status
+// Update PO status — draft → approved requires RACI (parent chain + amount threshold).
 posRouter.post('/:id/status', async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const { id } = c.req.param()
-  const { status } = poStatusSchema.parse(await c.req.json())
+  const body = await c.req.json()
+  const { status } = poStatusSchema.parse(body)
+
+  const po = await db.query.pos.findFirst({
+    where: and(eq(pos.id, id), eq(pos.tenantId, tenant.tenantId)),
+    columns: { id: true, status: true, createdBy: true, totalAmount: true },
+  })
+  if (!po) return c.json({ error: 'PO not found' }, 404)
+
+  if (status === 'approved' || status === 'pending_approval') {
+    const result = await checkApprover(
+      c,
+      tenant.tenantId,
+      { requesterUserId: po.createdBy, amount: po.totalAmount },
+      {},
+    )
+    if (!result.allowed) {
+      return c.json(
+        {
+          error: 'Hanya atasan langsung atau owner yang dapat menyetujui PO',
+          approvers: result.chain,
+        },
+        403,
+      )
+    }
+  } else if (!hasModulePermission(c, 'procurement:write')) {
+    return c.json({ error: 'Forbidden' }, 403)
+  }
 
   const updateData: Record<string, unknown> = { status, updatedAt: new Date() }
 

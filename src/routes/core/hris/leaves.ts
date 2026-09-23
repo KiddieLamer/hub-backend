@@ -4,7 +4,7 @@ import { eq, and } from 'drizzle-orm'
 import { db } from '../../../db'
 import { leaveTypes, leaveRequests } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
-import { requireModuleAccess } from '../../../middleware/rbac'
+import { requireModuleAccessExcept } from '../../../middleware/rbac'
 import { requireApprover } from '../../../lib/approvals'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 
@@ -13,7 +13,7 @@ type Variables = AuthVariables & TenantVariables
 const leavesRouter = new Hono<{ Variables: Variables }>()
 leavesRouter.use('*', authMiddleware)
 leavesRouter.use('*', tenantMiddleware)
-leavesRouter.use('*', requireModuleAccess('hris:read', 'hris:write'))
+leavesRouter.use('*', requireModuleAccessExcept('hris:read', 'hris:write', [{ suffix: '/approve' }, { suffix: '/reject' }]))
 
 const leaveTypeSchema = z.object({
   name: z.string().min(1).max(100),
@@ -137,7 +137,10 @@ async function leaveRequester(c: Context) {
   return req ? { requesterUserId: req.userId } : null
 }
 
-leavesRouter.patch('/requests/:id/approve', requireApprover(leaveRequester), async (c) => {
+leavesRouter.patch(
+  '/requests/:id/approve',
+  requireApprover(leaveRequester, { permission: 'hris:approve' }),
+  async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const { id } = c.req.param()
@@ -157,9 +160,13 @@ leavesRouter.patch('/requests/:id/approve', requireApprover(leaveRequester), asy
   }
 
   return c.json({ leaveRequest: updated })
-})
+  },
+)
 
-leavesRouter.patch('/requests/:id/reject', requireApprover(leaveRequester), async (c) => {
+leavesRouter.patch(
+  '/requests/:id/reject',
+  requireApprover(leaveRequester, { permission: 'hris:approve' }),
+  async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const { id } = c.req.param()
@@ -179,6 +186,7 @@ leavesRouter.patch('/requests/:id/reject', requireApprover(leaveRequester), asyn
   }
 
   return c.json({ leaveRequest: updated })
-})
+  },
+)
 
 export default leavesRouter

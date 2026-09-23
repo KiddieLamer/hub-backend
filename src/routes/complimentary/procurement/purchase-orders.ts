@@ -4,7 +4,8 @@ import { eq, and, SQL, ilike } from 'drizzle-orm'
 import { db } from '../../../db'
 import { purchaseOrders } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
-import { requireModuleAccess } from '../../../middleware/rbac'
+import { requireModuleAccessExcept, hasModulePermission } from '../../../middleware/rbac'
+import { checkApprover } from '../../../lib/approvals'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 
 type Variables = AuthVariables & TenantVariables
@@ -12,7 +13,7 @@ type Variables = AuthVariables & TenantVariables
 const purchaseOrdersRouter = new Hono<{ Variables: Variables }>()
 purchaseOrdersRouter.use('*', authMiddleware)
 purchaseOrdersRouter.use('*', tenantMiddleware)
-purchaseOrdersRouter.use('*', requireModuleAccess('procurement:read', 'procurement:write'))
+purchaseOrdersRouter.use('*', requireModuleAccessExcept('procurement:read', 'procurement:write', [{ method: 'PATCH' }]))
 
 const createPOSchema = z.object({
   poNumber: z.string().min(1).max(100),
@@ -80,7 +81,7 @@ purchaseOrdersRouter.get('/:id', async (c) => {
   return c.json({ purchaseOrder: po })
 })
 
-// Create PO
+// Create PO (always starts as draft — send requires approval chain).
 purchaseOrdersRouter.post('/', async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
@@ -88,6 +89,7 @@ purchaseOrdersRouter.post('/', async (c) => {
 
   const [po] = await db.insert(purchaseOrders).values({
     ...body,
+    status: 'draft',
     tenantId: tenant.tenantId,
     issuedBy: authUser.id,
     subtotal: String(body.subtotal),
@@ -99,11 +101,38 @@ purchaseOrdersRouter.post('/', async (c) => {
   return c.json({ purchaseOrder: po }, 201)
 })
 
-// Update PO
+// Update PO — approval to sent_to_vendor follows RACI (parent + amount threshold).
 purchaseOrdersRouter.patch('/:id', async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
   const body = createPOSchema.partial().parse(await c.req.json())
+
+  const existing = await db.query.purchaseOrders.findFirst({
+    where: and(eq(purchaseOrders.id, id), eq(purchaseOrders.tenantId, tenant.tenantId)),
+    columns: { id: true, status: true, issuedBy: true, grandTotal: true },
+  })
+  if (!existing) return c.json({ error: 'Purchase order not found' }, 404)
+
+  const sending = body.status === 'sent_to_vendor' && existing.status === 'draft'
+  if (sending) {
+    const result = await checkApprover(
+      c,
+      tenant.tenantId,
+      { requesterUserId: existing.issuedBy, amount: body.grandTotal ?? existing.grandTotal },
+      {},
+    )
+    if (!result.allowed) {
+      return c.json(
+        {
+          error: 'Hanya atasan langsung atau owner yang dapat menyetujui PO',
+          approvers: result.chain,
+        },
+        403,
+      )
+    }
+  } else if (!hasModulePermission(c, 'procurement:write')) {
+    return c.json({ error: 'Forbidden' }, 403)
+  }
 
   const [updated] = await db
     .update(purchaseOrders)

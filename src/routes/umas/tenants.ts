@@ -40,6 +40,7 @@ const updateTenantSchema = z.object({
   logoUrl: z.string().optional(),
   gmapLink: z.string().optional(),
   gdriveLink: z.string().optional(),
+  approvalThreshold: z.number().int().min(0).optional(),
 })
 
 tenantsRouter.use('*', authMiddleware)

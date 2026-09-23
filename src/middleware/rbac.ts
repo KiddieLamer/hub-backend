@@ -75,3 +75,53 @@ export function requireModuleAccess(readPermission: string, writePermission: str
     return c.json({ error: 'Forbidden' }, 403)
   }
 }
+
+export interface ModuleAccessExcept {
+  // Path suffix to match (e.g. '/approve'). Omit to match any path.
+  suffix?: string
+  // HTTP method to match (e.g. 'PATCH'). Omit to match any method.
+  method?: string
+}
+
+// Same as requireModuleAccess, but skips the module gate for approval
+// actions (RACI). Skipped routes are authorized by requireApprover /
+// checkApprover instead — the approver is whoever the position chain
+// says, even without the module :write grant.
+export function requireModuleAccessExcept(
+  readPermission: string,
+  writePermission: string,
+  except: ModuleAccessExcept[],
+) {
+  const base = requireModuleAccess(readPermission, writePermission)
+  return async (c: Context, next: Next) => {
+    const path = c.req.path
+    const method = c.req.method
+    const skipped = except.some(
+      (e) =>
+        (e.suffix === undefined || path.endsWith(e.suffix)) &&
+        (e.method === undefined || method === e.method),
+    )
+    if (skipped) {
+      await next()
+      return
+    }
+    return base(c, next)
+  }
+}
+
+// Read-only permission probe (no response). True when the caller passes
+// the same gate as requireModuleAccess for the given permission.
+export function hasModulePermission(c: Context, permission: string): boolean {
+  const user = c.get('user') as AuthUser | undefined
+  const tenant = c.get('tenant') as { tenantRole?: string } | undefined
+  if (!user || !tenant) return false
+  if (
+    user.platformRole === 'hub-admin' ||
+    tenant.tenantRole === 'hub-admin' ||
+    tenant.tenantRole === 'owner' ||
+    tenant.tenantRole === 'admin'
+  ) {
+    return true
+  }
+  return user.permissions?.includes(permission) ?? false
+}

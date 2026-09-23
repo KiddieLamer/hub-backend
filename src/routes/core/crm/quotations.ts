@@ -4,7 +4,8 @@ import { eq, and, or, ilike } from 'drizzle-orm'
 import { db } from '../../../db'
 import { quotations, quotationItems, invoices, projects } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
-import { requireModuleAccess } from '../../../middleware/rbac'
+import { requireModuleAccessExcept, hasModulePermission } from '../../../middleware/rbac'
+import { requireApprover, checkApprover } from '../../../lib/approvals'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 
 type Variables = AuthVariables & TenantVariables
@@ -13,7 +14,7 @@ const quotationRouter = new Hono<{ Variables: Variables }>()
 
 quotationRouter.use('*', authMiddleware)
 quotationRouter.use('*', tenantMiddleware)
-quotationRouter.use('*', requireModuleAccess('crm:read', 'crm:write'))
+quotationRouter.use('*', requireModuleAccessExcept('crm:read', 'crm:write', [{ suffix: '/approve' }, { suffix: '/status' }]))
 
 const createItemSchema = z.object({
   catalogItemId: z.string().uuid().nullable().optional(),
@@ -228,14 +229,48 @@ quotationRouter.patch('/:id', async (c) => {
   return c.json({ quotation: result })
 })
 
+// Status transitions. Leaving pending_approval (→ sent / accepted) requires
+// RACI approval from position level >= 60 (Project Lead / setara).
+// Submit (draft → pending_approval) and other transitions need crm:write.
 quotationRouter.post('/:id/status', async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
   const { status, rejectionReason } = await c.req.json()
 
-  const validStatuses = ['draft', 'sent', 'accepted', 'declined', 'expired', 'converted_to_invoice']
+  const validStatuses = ['draft', 'pending_approval', 'sent', 'accepted', 'declined', 'expired', 'converted_to_invoice']
   if (!validStatuses.includes(status)) {
     return c.json({ error: 'Invalid status' }, 400)
+  }
+
+  const existing = await db.query.quotations.findFirst({
+    where: and(eq(quotations.id, id), eq(quotations.tenantId, tenant.tenantId)),
+    columns: { id: true, status: true, createdBy: true },
+  })
+  if (!existing) return c.json({ error: 'Quotation not found' }, 404)
+
+  // Submit for approval (draft → pending_approval) is free for the author;
+  // leaving pending_approval (approve → sent) requires level ≥ 60 RACI.
+  const needsApproval =
+    existing.status === 'pending_approval' &&
+    (status === 'sent' || status === 'accepted')
+
+  if (needsApproval) {
+    const result = await checkApprover(c, tenant.tenantId, { requesterUserId: existing.createdBy }, {
+      chainType: 'level60',
+    })
+    if (!result.allowed) {
+      return c.json(
+        {
+          error: 'Hanya atasan level ≥ 60 atau owner yang dapat menyetujui quotation',
+          approvers: result.chain,
+        },
+        403,
+      )
+    }
+  } else if (!hasModulePermission(c, 'crm:write')) {
+    // Non-approval transitions (submit draft, mark accepted/declined, ...)
+    // still need the module write grant.
+    return c.json({ error: 'Forbidden' }, 403)
   }
 
   const updateData: Record<string, any> = { status, updatedAt: new Date() }
@@ -255,6 +290,50 @@ quotationRouter.post('/:id/status', async (c) => {
 
   return c.json({ quotation: updated })
 })
+
+// Explicit approve endpoint for the RACI queue (draft → pending_approval / sent).
+quotationRouter.post(
+  '/:id/approve',
+  requireApprover(
+    async (c) => {
+      const tenant = c.get('tenant') as { tenantId: string }
+      const { id } = c.req.param()
+      const q = await db.query.quotations.findFirst({
+        where: and(eq(quotations.id, id), eq(quotations.tenantId, tenant.tenantId)),
+        columns: { createdBy: true },
+      })
+      return q ? { requesterUserId: q.createdBy } : null
+    },
+    { chainType: 'level60', message: 'Hanya atasan level ≥ 60 atau owner yang dapat menyetujui quotation' },
+  ),
+  async (c) => {
+    const tenant = c.get('tenant')
+    const { id } = c.req.param()
+    const body = z.object({ approved: z.boolean(), rejectionReason: z.string().optional() }).parse(await c.req.json().catch(() => ({ approved: true })))
+
+    const existing = await db.query.quotations.findFirst({
+      where: and(eq(quotations.id, id), eq(quotations.tenantId, tenant.tenantId)),
+    })
+    if (!existing) return c.json({ error: 'Quotation not found' }, 404)
+    if (existing.status !== 'draft' && existing.status !== 'pending_approval') {
+      return c.json({ error: 'Quotation is not awaiting approval' }, 400)
+    }
+
+    const updateData: Record<string, any> = {
+      status: body.approved ? 'sent' : 'draft',
+      updatedAt: new Date(),
+    }
+    if (!body.approved && body.rejectionReason) updateData.rejectionReason = body.rejectionReason
+
+    const [updated] = await db
+      .update(quotations)
+      .set(updateData)
+      .where(and(eq(quotations.id, id), eq(quotations.tenantId, tenant.tenantId)))
+      .returning()
+
+    return c.json({ quotation: updated })
+  },
+)
 
 quotationRouter.post('/:id/convert-to-invoice', async (c) => {
   const tenant = c.get('tenant')
