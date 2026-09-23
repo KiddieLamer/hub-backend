@@ -1,10 +1,11 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { z } from 'zod'
 import { eq, and } from 'drizzle-orm'
 import { db } from '../../../db'
 import { leaveTypes, leaveRequests } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { requireModuleAccess } from '../../../middleware/rbac'
+import { requireApprover } from '../../../lib/approvals'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 
 type Variables = AuthVariables & TenantVariables
@@ -126,7 +127,17 @@ leavesRouter.delete('/requests/:id', async (c) => {
   return c.json({ message: 'Leave request deleted' })
 })
 
-leavesRouter.patch('/requests/:id/approve', requireModuleAccess('hris:approve', 'hris:approve'), async (c) => {
+async function leaveRequester(c: Context) {
+  const tenant = c.get('tenant') as { tenantId: string }
+  const { id } = c.req.param()
+  const req = await db.query.leaveRequests.findFirst({
+    where: and(eq(leaveRequests.id, id), eq(leaveRequests.tenantId, tenant.tenantId)),
+    columns: { userId: true },
+  })
+  return req ? { requesterUserId: req.userId } : null
+}
+
+leavesRouter.patch('/requests/:id/approve', requireApprover(leaveRequester), async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const { id } = c.req.param()
@@ -148,7 +159,7 @@ leavesRouter.patch('/requests/:id/approve', requireModuleAccess('hris:approve', 
   return c.json({ leaveRequest: updated })
 })
 
-leavesRouter.patch('/requests/:id/reject', requireModuleAccess('hris:approve', 'hris:approve'), async (c) => {
+leavesRouter.patch('/requests/:id/reject', requireApprover(leaveRequester), async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const { id } = c.req.param()

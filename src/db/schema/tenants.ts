@@ -18,6 +18,9 @@ export const tenants = pgTable('tenants', {
   // jasa-lapangan | hotel | konsultan | umum
   category: varchar('category', { length: 50 }).default('umum').notNull(),
 
+  // Fase 3: nominal (rupiah) yang menaikkan approval ke owner.
+  approvalThreshold: integer('approval_threshold').default(10000000).notNull(),
+
   // 3. Legalitas & Kepatuhan
   taxId: varchar('tax_id', { length: 50 }),
   address: text('address'),

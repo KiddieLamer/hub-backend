@@ -50,6 +50,7 @@ import stockMovementsRouter from './routes/core/procurement/stock-movements'
 // Fast
 import shiftsRouter from './routes/fast/shifts'
 import notifications from './routes/fast/notifications'
+import approvalsRouter from './routes/fast/approvals'
 
 // Complimentary
 import assetsRouter from './routes/complimentary/assets'
@@ -107,6 +108,7 @@ app.route('/api/stock-movements', stockMovementsRouter)
 // ============ FAST ============
 app.route('/api/hris/shifts', shiftsRouter)
 app.route('/api/notifications', notifications)
+app.route('/api/approvals', approvalsRouter)
 
 // ============ COMPLIMENTARY ============
 app.route('/api/assets', assetsRouter)

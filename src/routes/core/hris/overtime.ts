@@ -1,10 +1,11 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { z } from 'zod'
 import { eq, and } from 'drizzle-orm'
 import { db } from '../../../db'
 import { overtimeRequests } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { requireModuleAccess } from '../../../middleware/rbac'
+import { requireApprover } from '../../../lib/approvals'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 
 type Variables = AuthVariables & TenantVariables
@@ -99,7 +100,17 @@ overtimeRouter.delete('/:id', async (c) => {
   return c.json({ message: 'Overtime request deleted' })
 })
 
-overtimeRouter.patch('/:id/approve', requireModuleAccess('hris:approve', 'hris:approve'), async (c) => {
+async function overtimeRequester(c: Context) {
+  const tenant = c.get('tenant') as { tenantId: string }
+  const { id } = c.req.param()
+  const req = await db.query.overtimeRequests.findFirst({
+    where: and(eq(overtimeRequests.id, id), eq(overtimeRequests.tenantId, tenant.tenantId)),
+    columns: { userId: true },
+  })
+  return req ? { requesterUserId: req.userId } : null
+}
+
+overtimeRouter.patch('/:id/approve', requireApprover(overtimeRequester), async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const { id } = c.req.param()
@@ -121,7 +132,7 @@ overtimeRouter.patch('/:id/approve', requireModuleAccess('hris:approve', 'hris:a
   return c.json({ overtimeRequest: updated })
 })
 
-overtimeRouter.patch('/:id/reject', requireModuleAccess('hris:approve', 'hris:approve'), async (c) => {
+overtimeRouter.patch('/:id/reject', requireApprover(overtimeRequester), async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const { id } = c.req.param()
