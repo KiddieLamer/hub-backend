@@ -258,6 +258,7 @@ membersRouter.patch('/:id/position', async (c) => {
 
 membersRouter.delete('/:id', async (c) => {
   const tenant = c.get('tenant')
+  const authUser = c.get('user')
   if (!['owner', 'admin', 'hub-admin'].includes(tenant.tenantRole)) {
     return c.json({ error: 'Insufficient permissions' }, 403)
   }
@@ -271,7 +272,10 @@ membersRouter.delete('/:id', async (c) => {
     return c.json({ error: 'Member not found' }, 404)
   }
 
-  if (member.role === 'owner') {
+  // Owners are protected from removal by tenant managers, but hub-admin
+  // (platform) can remove anyone — they retain access via bypass anyway,
+  // so a company can never lock itself out this way.
+  if (member.role === 'owner' && authUser.platformRole !== 'hub-admin') {
     return c.json({ error: 'Cannot remove owner' }, 403)
   }
 
