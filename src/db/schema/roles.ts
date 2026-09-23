@@ -1,5 +1,6 @@
 import { pgTable, uuid, varchar, timestamp } from 'drizzle-orm/pg-core'
 import { users } from './users'
+import { tenants } from './tenants'
 
 export const roles = pgTable('roles', {
   id: uuid('id').defaultRandom().primaryKey(),
@@ -24,6 +25,9 @@ export const rolePermissions = pgTable('role_permissions', {
 export const userRoles = pgTable('user_roles', {
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
   roleId: uuid('role_id').references(() => roles.id, { onDelete: 'cascade' }).notNull(),
+  // Scope the assignment to one tenant so the same user can hold
+  // different RBAC roles in different companies.
+  tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'cascade' }).notNull(),
 })
 
 export type Role = typeof roles.$inferSelect

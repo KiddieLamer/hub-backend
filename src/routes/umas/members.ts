@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { eq, and } from 'drizzle-orm'
 import { db } from '../../db'
-import { tenantMembers, users, tenants } from '../../db/schema'
+import { tenantMembers, users, tenants, positions, roles, userRoles } from '../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../middleware/auth'
 import { tenantMiddleware, type TenantVariables } from '../../middleware/tenant'
 
@@ -20,11 +20,37 @@ const updateJobTitleSchema = z.object({
 const addMemberSchema = z.object({
   userId: z.string().uuid(),
   role: z.enum(['owner', 'admin', 'member']).default('member'),
+  jobTitle: z.string().max(255).nullish(),
+  positionId: z.string().uuid().nullish(),
 })
 
 const updateMemberRoleSchema = z.object({
   role: z.enum(['owner', 'admin', 'member']),
 })
+
+const updateMemberPositionSchema = z.object({
+  positionId: z.string().uuid().nullable(),
+})
+
+// Idempotent helper: grant an RBAC role to a user within one tenant.
+// Only applies when the role itself belongs to that tenant.
+async function grantTenantRole(userId: string, roleId: string, tenantId: string) {
+  const role = await db.query.roles.findFirst({
+    where: and(eq(roles.id, roleId), eq(roles.tenantId, tenantId)),
+  })
+  if (!role) return
+
+  const existing = await db.query.userRoles.findFirst({
+    where: and(
+      eq(userRoles.userId, userId),
+      eq(userRoles.roleId, roleId),
+      eq(userRoles.tenantId, tenantId),
+    ),
+  })
+  if (!existing) {
+    await db.insert(userRoles).values({ userId, roleId, tenantId })
+  }
+}
 
 membersRouter.get('/', async (c) => {
   const tenant = c.get('tenant')
@@ -35,6 +61,8 @@ membersRouter.get('/', async (c) => {
       userId: tenantMembers.userId,
       role: tenantMembers.role,
       jobTitle: tenantMembers.jobTitle,
+      positionId: tenantMembers.positionId,
+      positionName: positions.name,
       createdAt: tenantMembers.createdAt,
       userFullName: users.fullName,
       userEmail: users.email,
@@ -45,6 +73,7 @@ membersRouter.get('/', async (c) => {
     })
     .from(tenantMembers)
     .innerJoin(users, eq(tenantMembers.userId, users.id))
+    .leftJoin(positions, eq(tenantMembers.positionId, positions.id))
     .where(eq(tenantMembers.tenantId, tenant.tenantId))
 
   return c.json({ members: data })
@@ -100,14 +129,32 @@ membersRouter.post('/', async (c) => {
     return c.json({ error: 'User is already a member of this tenant' }, 409)
   }
 
+  let position: { id: string; defaultRoleId: string | null } | undefined
+  if (body.positionId) {
+    const found = await db.query.positions.findFirst({
+      where: and(eq(positions.id, body.positionId), eq(positions.tenantId, tenant.tenantId)),
+    })
+    if (!found) {
+      return c.json({ error: 'Position not found in this tenant' }, 404)
+    }
+    position = found
+  }
+
   const [member] = await db
     .insert(tenantMembers)
     .values({
       userId: body.userId,
       tenantId: tenant.tenantId,
       role: body.role,
+      jobTitle: body.jobTitle ?? null,
+      positionId: position?.id ?? null,
     })
     .returning()
+
+  // Auto-grant the position's default RBAC role, if any.
+  if (position?.defaultRoleId) {
+    await grantTenantRole(body.userId, position.defaultRoleId, tenant.tenantId)
+  }
 
   return c.json({ member }, 201)
 })
@@ -157,6 +204,46 @@ membersRouter.patch('/:id/job-title', async (c) => {
   return c.json({ member: updated })
 })
 
+membersRouter.patch('/:id/position', async (c) => {
+  const tenant = c.get('tenant')
+  if (!['owner', 'admin', 'hub-admin'].includes(tenant.tenantRole)) {
+    return c.json({ error: 'Insufficient permissions' }, 403)
+  }
+  const { id } = c.req.param()
+  const body = updateMemberPositionSchema.parse(await c.req.json())
+
+  const member = await db.query.tenantMembers.findFirst({
+    where: and(eq(tenantMembers.id, id), eq(tenantMembers.tenantId, tenant.tenantId)),
+  })
+  if (!member) {
+    return c.json({ error: 'Member not found' }, 404)
+  }
+
+  let position: { id: string; defaultRoleId: string | null } | null = null
+  if (body.positionId) {
+    const found = await db.query.positions.findFirst({
+      where: and(eq(positions.id, body.positionId), eq(positions.tenantId, tenant.tenantId)),
+    })
+    if (!found) {
+      return c.json({ error: 'Position not found in this tenant' }, 404)
+    }
+    position = found
+  }
+
+  const [updated] = await db
+    .update(tenantMembers)
+    .set({ positionId: position?.id ?? null })
+    .where(and(eq(tenantMembers.id, id), eq(tenantMembers.tenantId, tenant.tenantId)))
+    .returning()
+
+  // Auto-grant the position's default RBAC role, if any.
+  if (position?.defaultRoleId) {
+    await grantTenantRole(member.userId, position.defaultRoleId, tenant.tenantId)
+  }
+
+  return c.json({ member: updated })
+})
+
 membersRouter.delete('/:id', async (c) => {
   const tenant = c.get('tenant')
   if (!['owner', 'admin', 'hub-admin'].includes(tenant.tenantRole)) {
@@ -176,6 +263,11 @@ membersRouter.delete('/:id', async (c) => {
     return c.json({ error: 'Cannot remove owner' }, 403)
   }
 
+  // Revoke this tenant's RBAC roles together with the membership.
+  await db.delete(userRoles).where(and(
+    eq(userRoles.userId, member.userId),
+    eq(userRoles.tenantId, tenant.tenantId),
+  ))
   await db.delete(tenantMembers).where(eq(tenantMembers.id, id))
 
   return c.json({ message: 'Member removed' })

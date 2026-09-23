@@ -8,6 +8,7 @@ import usersRouter from './routes/umas/users'
 import tenantsRouter from './routes/umas/tenants'
 import membersRouter from './routes/umas/members'
 import rolesRouter from './routes/umas/roles'
+import positionsRouter from './routes/umas/positions'
 
 // Core - CRM
 import clientsRouter from './routes/core/crm/clients'
@@ -76,6 +77,7 @@ app.route('/api/users', usersRouter)
 app.route('/api/tenants', tenantsRouter)
 app.route('/api/members', membersRouter)
 app.route('/api/roles', rolesRouter)
+app.route('/api/positions', positionsRouter)
 
 // ============ CORE ============
 app.route('/api/clients', clientsRouter)

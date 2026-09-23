@@ -1,6 +1,7 @@
 export { users, type User, type NewUser } from './users'
 export { tenants, type Tenant, type NewTenant } from './tenants'
 export { tenantMembers, type TenantMember } from './members'
+export { positions, type Position, type NewPosition } from './positions'
 export { clients, type Client, type NewClient } from './clients'
 export { bookings, type Booking, type NewBooking } from './bookings'
 export { roles, permissions, rolePermissions, userRoles, type Role, type Permission } from './roles'

@@ -1,7 +1,7 @@
 import { Context, Next } from 'hono'
 import { eq, and } from 'drizzle-orm'
 import { db } from '../db'
-import { tenantMembers, tenants } from '../db/schema'
+import { tenantMembers, tenants, userRoles, roles, rolePermissions, permissions } from '../db/schema'
 import { type AuthUser } from './auth'
 
 export interface TenantContext {
@@ -45,6 +45,29 @@ export async function tenantMiddleware(c: Context<{ Variables: { user: AuthUser 
   c.set('tenant', {
     tenantId: tenantId,
     tenantRole: membership?.role || 'hub-admin',
+  })
+
+  // Scope RBAC roles/permissions to this tenant. user_roles is per-tenant,
+  // so a user with different roles in different companies only carries
+  // this tenant's roles here (previously they leaked across tenants).
+  const scopedRoles = await db
+    .select({ roleName: roles.name })
+    .from(userRoles)
+    .innerJoin(roles, eq(userRoles.roleId, roles.id))
+    .where(and(eq(userRoles.userId, user.id), eq(userRoles.tenantId, tenantId)))
+
+  const scopedPermissions = await db
+    .select({ permissionName: permissions.name })
+    .from(userRoles)
+    .innerJoin(roles, eq(userRoles.roleId, roles.id))
+    .innerJoin(rolePermissions, eq(rolePermissions.roleId, roles.id))
+    .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
+    .where(and(eq(userRoles.userId, user.id), eq(userRoles.tenantId, tenantId)))
+
+  c.set('user', {
+    ...user,
+    roles: scopedRoles.map((r) => r.roleName),
+    permissions: [...new Set(scopedPermissions.map((p) => p.permissionName))],
   })
 
   await next()
