@@ -1,16 +1,22 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, SQL, ilike } from 'drizzle-orm'
+import { eq, and, SQL, ilike, count } from 'drizzle-orm'
 import { db } from '../../../db'
 import { supportTickets } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
+import { requireModuleAccess } from '../../../middleware/rbac'
+import { parsePagination, paginated } from '../../../lib/pagination'
+import { validate, getValidated } from '../../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
 const supportTicketsRouter = new Hono<{ Variables: Variables }>()
 supportTicketsRouter.use('*', authMiddleware)
 supportTicketsRouter.use('*', tenantMiddleware)
+// Compliance module gate: reads need compliance:read, mutations compliance:write.
+// Owner/admin/hub-admin bypass inside requireModuleAccess.
+supportTicketsRouter.use('*', requireModuleAccess('compliance:read', 'compliance:write'))
 
 const ticketStatusSchema = z.object({
   status: z.enum(['open', 'in_progress', 'resolved', 'closed']),
@@ -31,10 +37,14 @@ const createTicketSchema = z.object({
   slaDueDate: z.string().optional(),
 })
 
+const updateTicketSchema = createTicketSchema.partial()
+
 // List tickets
 supportTicketsRouter.get('/', async (c) => {
   const tenant = c.get('tenant')
   const { search, status, category, priority, assignedTo } = c.req.query()
+
+  const { page, limit, offset } = parsePagination(c)
 
   const conditions: SQL[] = [eq(supportTickets.tenantId, tenant.tenantId)]
 
@@ -44,12 +54,19 @@ supportTicketsRouter.get('/', async (c) => {
   if (priority) conditions.push(eq(supportTickets.priority, priority))
   if (assignedTo) conditions.push(eq(supportTickets.assignedTo, assignedTo))
 
-  const data = await db.query.supportTickets.findMany({
-    where: and(...conditions),
-    orderBy: (fields, { desc }) => [desc(fields.createdAt)],
-  })
+  const where = and(...conditions)
 
-  return c.json({ tickets: data, total: data.length })
+  const [data, totalRows] = await Promise.all([
+    db.query.supportTickets.findMany({
+      where,
+      orderBy: (fields, { desc }) => [desc(fields.createdAt)],
+      limit,
+      offset,
+    }),
+    db.select({ total: count() }).from(supportTickets).where(where),
+  ])
+
+  return c.json(paginated('tickets', data, totalRows[0]?.total ?? 0, { page, limit, offset }))
 })
 
 // Ticket stats
@@ -96,7 +113,7 @@ supportTicketsRouter.get('/:id', async (c) => {
 supportTicketsRouter.post('/', async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
-  const body = createTicketSchema.parse(await c.req.json())
+  const body = getValidated<typeof createTicketSchema>(c, 'json')!
 
   const [ticket] = await db.insert(supportTickets).values({
     ...body,
@@ -112,7 +129,7 @@ supportTicketsRouter.post('/', async (c) => {
 supportTicketsRouter.patch('/:id', async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const body = createTicketSchema.partial().parse(await c.req.json())
+  const body = getValidated<typeof updateTicketSchema>(c, 'json')!
 
   const [updated] = await db
     .update(supportTickets)
@@ -133,7 +150,7 @@ supportTicketsRouter.patch('/:id', async (c) => {
 supportTicketsRouter.post('/:id/status', async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const { status } = ticketStatusSchema.parse(await c.req.json())
+  const { status } = getValidated<typeof ticketStatusSchema>(c, 'json')!
 
   const updateData: Record<string, unknown> = { status, updatedAt: new Date() }
 
@@ -156,7 +173,7 @@ supportTicketsRouter.post('/:id/status', async (c) => {
 supportTicketsRouter.post('/:id/assign', async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const { userId } = assignTicketSchema.parse(await c.req.json())
+  const { userId } = getValidated<typeof assignTicketSchema>(c, 'json')!
 
   const [updated] = await db
     .update(supportTickets)

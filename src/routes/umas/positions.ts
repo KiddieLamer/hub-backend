@@ -1,11 +1,13 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, desc, asc } from 'drizzle-orm'
+import { eq, and, desc, asc, count } from 'drizzle-orm'
 import { db } from '../../db'
 import { positions, roles, tenantMembers } from '../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../middleware/auth'
 import { requireModuleAccess } from '../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../middleware/tenant'
+import { parsePagination, paginated } from '../../lib/pagination'
+import { validate, getValidated } from '../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -55,8 +57,9 @@ async function validateRefs(
 
 positionsRouter.get('/', async (c) => {
   const tenant = c.get('tenant')
+  const pagination = parsePagination(c)
 
-  const rows = await db
+  const baseQuery = db
     .select({
       id: positions.id,
       tenantId: positions.tenantId,
@@ -73,7 +76,12 @@ positionsRouter.get('/', async (c) => {
     .where(eq(positions.tenantId, tenant.tenantId))
     .orderBy(desc(positions.level), asc(positions.name))
 
-  return c.json({ positions: rows })
+  const [rows, [{ value: total }]] = await Promise.all([
+    baseQuery.limit(pagination.limit).offset(pagination.offset),
+    db.select({ value: count() }).from(positions).where(eq(positions.tenantId, tenant.tenantId)),
+  ])
+
+  return c.json(paginated('positions', rows, Number(total), pagination))
 })
 
 positionsRouter.post('/', async (c) => {
@@ -83,7 +91,7 @@ positionsRouter.post('/', async (c) => {
     return c.json({ error: 'Insufficient permissions' }, 403)
   }
 
-  const body = positionSchema.parse(await c.req.json())
+  const body = getValidated<typeof positionSchema>(c, 'json')!
 
   const refError = await validateRefs(tenant.tenantId, body)
   if (refError) {
@@ -116,7 +124,7 @@ positionsRouter.patch('/:id', async (c) => {
   }
 
   const { id } = c.req.param()
-  const body = positionSchema.partial().parse(await c.req.json())
+  const body = getValidated<ReturnType<typeof positionSchema.partial>>(c, 'json')!
 
   const position = await db.query.positions.findFirst({
     where: and(eq(positions.id, id), eq(positions.tenantId, tenant.tenantId)),

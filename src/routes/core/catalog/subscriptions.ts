@@ -1,11 +1,13 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, SQL, ilike } from 'drizzle-orm'
+import { eq, and, SQL, ilike, count } from 'drizzle-orm'
 import { db } from '../../../db'
 import { clientSubscriptions, clientQuotaBalances } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
+import { parsePagination, paginated } from '../../../lib/pagination'
+import { validate, getValidated } from '../../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -34,6 +36,7 @@ const createSubscriptionSchema = z.object({
 subscriptionsRouter.get('/', async (c) => {
   const tenant = c.get('tenant')
   const { search, status, clientId } = c.req.query()
+  const pagination = parsePagination(c)
 
   const conditions: SQL[] = [eq(clientSubscriptions.tenantId, tenant.tenantId)]
 
@@ -41,12 +44,19 @@ subscriptionsRouter.get('/', async (c) => {
   if (status) conditions.push(eq(clientSubscriptions.status, status))
   if (clientId) conditions.push(eq(clientSubscriptions.clientId, clientId))
 
-  const data = await db.query.clientSubscriptions.findMany({
-    where: and(...conditions),
-    orderBy: (fields, { desc }) => [desc(fields.createdAt)],
-  })
+  const where = and(...conditions)
 
-  return c.json({ subscriptions: data, total: data.length })
+  const [data, [{ value: total }]] = await Promise.all([
+    db.query.clientSubscriptions.findMany({
+      where,
+      orderBy: (fields, { desc }) => [desc(fields.createdAt)],
+      limit: pagination.limit,
+      offset: pagination.offset,
+    }),
+    db.select({ value: count() }).from(clientSubscriptions).where(where),
+  ])
+
+  return c.json(paginated('subscriptions', data, Number(total), pagination))
 })
 
 // Subscription stats
@@ -90,7 +100,7 @@ subscriptionsRouter.get('/:id', async (c) => {
 // Create subscription
 subscriptionsRouter.post('/', async (c) => {
   const tenant = c.get('tenant')
-  const body = createSubscriptionSchema.parse(await c.req.json())
+  const body = getValidated<typeof createSubscriptionSchema>(c, 'json')!
 
   const [subscription] = await db.insert(clientSubscriptions).values({
     ...body,
@@ -114,10 +124,10 @@ subscriptionsRouter.post('/', async (c) => {
 })
 
 // Update subscription
-subscriptionsRouter.patch('/:id', async (c) => {
+subscriptionsRouter.patch('/:id', validate(createSubscriptionSchema.partial(), 'json'), async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const body = createSubscriptionSchema.partial().parse(await c.req.json())
+  const body = getValidated<typeof createSubscriptionSchema>(c, 'json')!
 
   const [updated] = await db
     .update(clientSubscriptions)
@@ -183,9 +193,13 @@ subscriptionsRouter.post('/:id/cancel', async (c) => {
 })
 
 // Use quota
-subscriptionsRouter.post('/:id/quotas/use', async (c) => {
+const useQuotaSchema = z.object({
+  serviceItemId: z.string().uuid(),
+})
+
+subscriptionsRouter.post('/:id/quotas/use', validate(useQuotaSchema, 'json'), async (c) => {
   const { id } = c.req.param()
-  const { serviceItemId } = await c.req.json()
+  const { serviceItemId } = getValidated<typeof useQuotaSchema>(c, 'json')!
 
   const quota = await db.query.clientQuotaBalances.findFirst({
     where: and(

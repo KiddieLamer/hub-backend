@@ -1,12 +1,14 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, SQL, ilike } from 'drizzle-orm'
+import { eq, and, SQL, ilike, count } from 'drizzle-orm'
 import { db } from '../../../db'
 import { purchaseOrders } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { requireModuleAccessExcept, hasModulePermission } from '../../../middleware/rbac'
 import { checkApprover } from '../../../lib/approvals'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
+import { parsePagination, paginated } from '../../../lib/pagination'
+import { validate, getValidated } from '../../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -27,6 +29,8 @@ const createPOSchema = z.object({
   status: z.enum(['draft', 'sent_to_vendor', 'partially_received', 'fully_received', 'cancelled']).default('draft'),
   expectedDeliveryDate: z.string().optional(),
 })
+
+const updatePOSchema = createPOSchema.partial()
 
 // List POs
 purchaseOrdersRouter.get('/', async (c) => {
@@ -85,7 +89,7 @@ purchaseOrdersRouter.get('/:id', async (c) => {
 purchaseOrdersRouter.post('/', async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
-  const body = createPOSchema.parse(await c.req.json())
+  const body = getValidated<typeof createPOSchema>(c, 'json')!
 
   const [po] = await db.insert(purchaseOrders).values({
     ...body,
@@ -105,7 +109,7 @@ purchaseOrdersRouter.post('/', async (c) => {
 purchaseOrdersRouter.patch('/:id', async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const body = createPOSchema.partial().parse(await c.req.json())
+  const body = getValidated<typeof updatePOSchema>(c, 'json')!
 
   const existing = await db.query.purchaseOrders.findFirst({
     where: and(eq(purchaseOrders.id, id), eq(purchaseOrders.tenantId, tenant.tenantId)),

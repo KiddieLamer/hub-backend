@@ -1,11 +1,13 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, SQL, ilike } from 'drizzle-orm'
+import { eq, and, SQL, ilike, count } from 'drizzle-orm'
 import { db } from '../../db'
 import { assets, assetLogs, assetMaintenances } from '../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../middleware/auth'
 import { requireModuleAccess } from '../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../middleware/tenant'
+import { parsePagination, paginated } from '../../lib/pagination'
+import { validate, getValidated } from '../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -47,9 +49,15 @@ const maintenanceSchema = z.object({
 })
 
 // List assets
-assetsRouter.get('/', async (c) => {
+const listAssetsQuerySchema = z.object({
+  search: z.string().optional(),
+  status: z.enum(['available', 'in_use', 'under_maintenance', 'broken', 'disposed', 'lost']).optional(),
+  category: z.string().max(100).optional(),
+})
+
+assetsRouter.get('/', validate(listAssetsQuerySchema, 'query'), async (c) => {
   const tenant = c.get('tenant')
-  const { search, status, category } = c.req.query()
+  const { search, status, category } = getValidated<typeof listAssetsQuerySchema>(c, 'query')!
 
   const conditions: SQL[] = [eq(assets.tenantId, tenant.tenantId)]
 
@@ -63,12 +71,19 @@ assetsRouter.get('/', async (c) => {
     conditions.push(eq(assets.category, category))
   }
 
-  const data = await db.query.assets.findMany({
-    where: and(...conditions),
-    orderBy: (fields, { desc }) => [desc(fields.createdAt)],
-  })
+  const pagination = parsePagination(c)
 
-  return c.json({ assets: data, total: data.length })
+  const [data, [{ value: total }]] = await Promise.all([
+    db.query.assets.findMany({
+      where: and(...conditions),
+      orderBy: (fields, { desc }) => [desc(fields.createdAt)],
+      limit: pagination.limit,
+      offset: pagination.offset,
+    }),
+    db.select({ value: count() }).from(assets).where(and(...conditions)),
+  ])
+
+  return c.json(paginated('assets', data, Number(total), pagination))
 })
 
 // Asset stats
@@ -94,9 +109,11 @@ assetsRouter.get('/stats', async (c) => {
 })
 
 // Get asset detail
-assetsRouter.get('/:id', async (c) => {
+const idParamSchema = z.object({ id: z.string().uuid() })
+
+assetsRouter.get('/:id', validate(idParamSchema, 'param'), async (c) => {
   const tenant = c.get('tenant')
-  const { id } = c.req.param()
+  const { id } = getValidated<typeof idParamSchema>(c, 'param')!
 
   const asset = await db.query.assets.findFirst({
     where: and(eq(assets.id, id), eq(assets.tenantId, tenant.tenantId)),
@@ -122,9 +139,9 @@ assetsRouter.get('/:id', async (c) => {
 })
 
 // Create asset
-assetsRouter.post('/', async (c) => {
+assetsRouter.post('/', validate(createAssetSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
-  const body = createAssetSchema.parse(await c.req.json())
+  const body = getValidated<typeof createAssetSchema>(c, 'json')!
 
   const [asset] = await db.insert(assets).values({
     ...body,
@@ -136,10 +153,10 @@ assetsRouter.post('/', async (c) => {
 })
 
 // Update asset
-assetsRouter.patch('/:id', async (c) => {
+assetsRouter.patch('/:id', validate(idParamSchema, 'param'), validate(createAssetSchema.partial(), 'json'), async (c) => {
   const tenant = c.get('tenant')
-  const { id } = c.req.param()
-  const body = createAssetSchema.partial().parse(await c.req.json())
+  const { id } = getValidated<typeof idParamSchema>(c, 'param')!
+  const body = getValidated<typeof createAssetSchema>(c, 'json')!
 
   const [updated] = await db
     .update(assets)
@@ -159,10 +176,10 @@ assetsRouter.patch('/:id', async (c) => {
 })
 
 // Handover asset
-assetsRouter.post('/:id/handover', async (c) => {
+assetsRouter.post('/:id/handover', validate(idParamSchema, 'param'), validate(handoverSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
-  const { id } = c.req.param()
-  const body = handoverSchema.parse(await c.req.json())
+  const { id } = getValidated<typeof idParamSchema>(c, 'param')!
+  const body = getValidated<typeof handoverSchema>(c, 'json')!
 
   const asset = await db.query.assets.findFirst({
     where: and(eq(assets.id, id), eq(assets.tenantId, tenant.tenantId)),
@@ -197,9 +214,9 @@ assetsRouter.post('/:id/handover', async (c) => {
 })
 
 // Return asset
-assetsRouter.post('/:id/return', async (c) => {
+assetsRouter.post('/:id/return', validate(idParamSchema, 'param'), async (c) => {
   const tenant = c.get('tenant')
-  const { id } = c.req.param()
+  const { id } = getValidated<typeof idParamSchema>(c, 'param')!
 
   const asset = await db.query.assets.findFirst({
     where: and(eq(assets.id, id), eq(assets.tenantId, tenant.tenantId)),
@@ -234,10 +251,10 @@ assetsRouter.post('/:id/return', async (c) => {
 })
 
 // Report maintenance
-assetsRouter.post('/:id/maintenance', async (c) => {
+assetsRouter.post('/:id/maintenance', validate(idParamSchema, 'param'), validate(maintenanceSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
-  const { id } = c.req.param()
-  const body = maintenanceSchema.parse(await c.req.json())
+  const { id } = getValidated<typeof idParamSchema>(c, 'param')!
+  const body = getValidated<typeof maintenanceSchema>(c, 'json')!
 
   const asset = await db.query.assets.findFirst({
     where: and(eq(assets.id, id), eq(assets.tenantId, tenant.tenantId)),
@@ -265,9 +282,9 @@ assetsRouter.post('/:id/maintenance', async (c) => {
 })
 
 // Get maintenance history
-assetsRouter.get('/:id/maintenances', async (c) => {
+assetsRouter.get('/:id/maintenances', validate(idParamSchema, 'param'), async (c) => {
   const tenant = c.get('tenant')
-  const { id } = c.req.param()
+  const { id } = getValidated<typeof idParamSchema>(c, 'param')!
 
   const asset = await db.query.assets.findFirst({
     where: and(eq(assets.id, id), eq(assets.tenantId, tenant.tenantId)),
@@ -286,9 +303,9 @@ assetsRouter.get('/:id/maintenances', async (c) => {
 })
 
 // Get asset logs
-assetsRouter.get('/:id/logs', async (c) => {
+assetsRouter.get('/:id/logs', validate(idParamSchema, 'param'), async (c) => {
   const tenant = c.get('tenant')
-  const { id } = c.req.param()
+  const { id } = getValidated<typeof idParamSchema>(c, 'param')!
 
   const asset = await db.query.assets.findFirst({
     where: and(eq(assets.id, id), eq(assets.tenantId, tenant.tenantId)),
@@ -307,9 +324,9 @@ assetsRouter.get('/:id/logs', async (c) => {
 })
 
 // Delete asset (soft delete)
-assetsRouter.delete('/:id', async (c) => {
+assetsRouter.delete('/:id', validate(idParamSchema, 'param'), async (c) => {
   const tenant = c.get('tenant')
-  const { id } = c.req.param()
+  const { id } = getValidated<typeof idParamSchema>(c, 'param')!
 
   const [deleted] = await db
     .update(assets)

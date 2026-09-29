@@ -1,11 +1,13 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, SQL, ilike } from 'drizzle-orm'
+import { eq, and, SQL, ilike, count } from 'drizzle-orm'
 import { db } from '../../../db'
 import { projects, projectMembers, projectMilestones, kanbanColumns } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
+import { parsePagination, paginated } from '../../../lib/pagination'
+import { validate, getValidated } from '../../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -25,6 +27,8 @@ const createProjectSchema = z.object({
   budget: z.number().min(0).default(0),
   description: z.string().optional(),
 })
+
+const updateProjectSchema = createProjectSchema.partial()
 
 const addMemberSchema = z.object({
   userId: z.string().uuid(),
@@ -48,17 +52,26 @@ projectsRouter.get('/', async (c) => {
   const tenant = c.get('tenant')
   const { search, status } = c.req.query()
 
+  const { page, limit, offset } = parsePagination(c)
+
   const conditions: SQL[] = [eq(projects.tenantId, tenant.tenantId)]
 
   if (search) conditions.push(ilike(projects.name, `%${search}%`))
   if (status) conditions.push(eq(projects.status, status))
 
-  const data = await db.query.projects.findMany({
-    where: and(...conditions),
-    orderBy: (fields, { desc }) => [desc(fields.createdAt)],
-  })
+  const where = and(...conditions)
 
-  return c.json({ projects: data, total: data.length })
+  const [data, totalRows] = await Promise.all([
+    db.query.projects.findMany({
+      where,
+      orderBy: (fields, { desc }) => [desc(fields.createdAt)],
+      limit,
+      offset,
+    }),
+    db.select({ total: count() }).from(projects).where(where),
+  ])
+
+  return c.json(paginated('projects', data, totalRows[0]?.total ?? 0, { page, limit, offset }))
 })
 
 // Project stats
@@ -115,7 +128,7 @@ projectsRouter.get('/:id', async (c) => {
 projectsRouter.post('/', async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
-  const body = createProjectSchema.parse(await c.req.json())
+  const body = getValidated<typeof createProjectSchema>(c, 'json')!
 
   const [project] = await db.insert(projects).values({
     ...body,
@@ -148,7 +161,7 @@ projectsRouter.post('/', async (c) => {
 projectsRouter.patch('/:id', async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const body = createProjectSchema.partial().parse(await c.req.json())
+  const body = getValidated<typeof updateProjectSchema>(c, 'json')!
 
   const [updated] = await db
     .update(projects)
@@ -169,7 +182,7 @@ projectsRouter.patch('/:id', async (c) => {
 projectsRouter.post('/:id/members', async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const body = addMemberSchema.parse(await c.req.json())
+  const body = getValidated<typeof addMemberSchema>(c, 'json')!
 
   // Verify project belongs to tenant
   const project = await db.query.projects.findFirst({
@@ -206,7 +219,7 @@ projectsRouter.delete('/:id/members/:userId', async (c) => {
 projectsRouter.post('/:id/milestones', async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const body = createMilestoneSchema.parse(await c.req.json())
+  const body = getValidated<typeof createMilestoneSchema>(c, 'json')!
 
   const project = await db.query.projects.findFirst({
     where: and(eq(projects.id, id), eq(projects.tenantId, tenant.tenantId)),
@@ -226,7 +239,7 @@ projectsRouter.post('/:id/milestones', async (c) => {
 projectsRouter.post('/:id/columns', async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const body = createColumnSchema.parse(await c.req.json())
+  const body = getValidated<typeof createColumnSchema>(c, 'json')!
 
   const project = await db.query.projects.findFirst({
     where: and(eq(projects.id, id), eq(projects.tenantId, tenant.tenantId)),

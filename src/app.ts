@@ -1,6 +1,10 @@
 import { Hono } from 'hono'
+import { sql } from 'drizzle-orm'
+import { db } from './db'
 import { corsMiddleware } from './middleware/cors'
-import { errorMiddleware } from './middleware/error'
+import { handleError } from './middleware/error'
+import { securityHeadersMiddleware } from './middleware/security'
+import { globalRateLimit } from './middleware/rateLimit'
 
 // UMAS
 import auth from './routes/umas/auth'
@@ -62,14 +66,27 @@ import goodsReceiptsRouter from './routes/complimentary/procurement/goods-receip
 const app = new Hono()
 
 app.use('*', corsMiddleware)
-app.use('*', errorMiddleware)
+// Hono only funnels handler throws into `onError`; a try/catch middleware
+// does NOT see downstream throws. ZodError -> 400, else -> 500.
+app.onError(handleError)
+app.use('*', securityHeadersMiddleware)
+// Global abuse dampening: ~100 req/min per IP across all API paths.
+// Registered before route handlers; /health and / are exempt inside the limiter.
+app.use('*', globalRateLimit())
 
 app.get('/', (c) => {
   return c.json({ name: 'hub-backend', version: '0.1.0', status: 'ok' })
 })
 
-app.get('/health', (c) => {
-  return c.json({ status: 'ok', timestamp: new Date().toISOString() })
+// Liveness + readiness in one. Must confirm the DB is reachable, otherwise a
+// load balancer keeps routing traffic at an instance that can't serve it.
+app.get('/health', async (c) => {
+  try {
+    await db.execute(sql`SELECT 1`)
+    return c.json({ status: 'ok', db: 'up', timestamp: new Date().toISOString() })
+  } catch {
+    return c.json({ status: 'degraded', db: 'down', timestamp: new Date().toISOString() }, 503)
+  }
 })
 
 // ============ UMAS ============

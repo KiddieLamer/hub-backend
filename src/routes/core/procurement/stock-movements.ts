@@ -1,11 +1,13 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, SQL, inArray } from 'drizzle-orm'
+import { eq, and, SQL, inArray, count } from 'drizzle-orm'
 import { db } from '../../../db'
 import { stockMovements, catalogItems } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
+import { parsePagination, paginated } from '../../../lib/pagination'
+import { validate, getValidated } from '../../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -32,6 +34,7 @@ const projectUseSchema = z.object({
 stockMovementsRouter.get('/', async (c) => {
   const tenant = c.get('tenant')
   const { catalogItemId, movementType, projectId } = c.req.query()
+  const pagination = parsePagination(c)
 
   const tenantCatalogItemIds = db.select({ id: catalogItems.id }).from(catalogItems).where(eq(catalogItems.tenantId, tenant.tenantId))
   const conditions: SQL[] = [inArray(stockMovements.catalogItemId, tenantCatalogItemIds)]
@@ -40,13 +43,19 @@ stockMovementsRouter.get('/', async (c) => {
   if (movementType) conditions.push(eq(stockMovements.movementType, movementType))
   if (projectId) conditions.push(eq(stockMovements.referenceProjectId, projectId))
 
-  const data = await db.query.stockMovements.findMany({
-    where: and(...conditions),
-    orderBy: (fields, { desc }) => [desc(fields.createdAt)],
-    limit: 100,
-  })
+  const where = and(...conditions)
 
-  return c.json({ movements: data, total: data.length })
+  const [data, [{ value: total }]] = await Promise.all([
+    db.query.stockMovements.findMany({
+      where,
+      orderBy: (fields, { desc }) => [desc(fields.createdAt)],
+      limit: pagination.limit,
+      offset: pagination.offset,
+    }),
+    db.select({ value: count() }).from(stockMovements).where(where),
+  ])
+
+  return c.json(paginated('movements', data, Number(total), pagination))
 })
 
 // Get stock summary
@@ -73,7 +82,7 @@ stockMovementsRouter.get('/summary', async (c) => {
 stockMovementsRouter.post('/adjust', async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
-  const { itemId, quantity, notes } = adjustSchema.parse(await c.req.json())
+  const { itemId, quantity, notes } = getValidated<typeof adjustSchema>(c, 'json')!
 
   const item = await db.query.catalogItems.findFirst({
     where: and(eq(catalogItems.id, itemId), eq(catalogItems.tenantId, tenant.tenantId)),
@@ -109,7 +118,7 @@ stockMovementsRouter.post('/adjust', async (c) => {
 stockMovementsRouter.post('/project-use', async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
-  const { itemId, projectId, quantity, notes } = projectUseSchema.parse(await c.req.json())
+  const { itemId, projectId, quantity, notes } = getValidated<typeof projectUseSchema>(c, 'json')!
 
   const item = await db.query.catalogItems.findFirst({
     where: and(eq(catalogItems.id, itemId), eq(catalogItems.tenantId, tenant.tenantId)),

@@ -1,10 +1,13 @@
 import { Hono } from 'hono'
-import { eq, and, SQL, ilike } from 'drizzle-orm'
+import { z } from 'zod'
+import { eq, and, SQL, ilike, count } from 'drizzle-orm'
 import { db } from '../../../db'
 import { systemAuditLogs } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
+import { parsePagination, paginated } from '../../../lib/pagination'
+import { validate, getValidated } from '../../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -12,6 +15,14 @@ const auditLogsRouter = new Hono<{ Variables: Variables }>()
 auditLogsRouter.use('*', authMiddleware)
 auditLogsRouter.use('*', tenantMiddleware)
 auditLogsRouter.use('*', requireModuleAccess('compliance:read', 'compliance:write'))
+
+const createAuditLogSchema = z.object({
+  action: z.string().min(1).max(100),
+  module: z.string().min(1).max(100),
+  recordId: z.string().uuid().nullable().optional(),
+  oldValues: z.record(z.unknown()).nullable().optional(),
+  newValues: z.record(z.unknown()).nullable().optional(),
+})
 
 // List audit logs
 auditLogsRouter.get('/', async (c) => {
@@ -59,7 +70,7 @@ auditLogsRouter.post('/', async (c) => {
     return c.json({ error: 'Forbidden' }, 403)
   }
 
-  const body = await c.req.json()
+  const body = getValidated<typeof createAuditLogSchema>(c, 'json')!
 
   const [log] = await db.insert(systemAuditLogs).values({
     tenantId: tenant.tenantId,

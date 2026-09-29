@@ -1,11 +1,13 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, SQL } from 'drizzle-orm'
+import { eq, and, SQL, count } from 'drizzle-orm'
 import { db } from '../../../db'
 import { payrollProfiles, payrolls, payrollItems } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
+import { parsePagination, paginated } from '../../../lib/pagination'
+import { validate, getValidated } from '../../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -39,7 +41,7 @@ payrollRouter.get('/profile', async (c) => {
 payrollRouter.post('/profile', async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
-  const body = payrollProfileSchema.parse(await c.req.json())
+  const body = getValidated<typeof payrollProfileSchema>(c, 'json')!
 
   const existing = await db.query.payrollProfiles.findFirst({
     where: and(eq(payrollProfiles.tenantId, tenant.tenantId), eq(payrollProfiles.userId, authUser.id)),
@@ -95,7 +97,7 @@ const createPayrollSchema = z.object({
 payrollRouter.post('/', async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
-  const body = createPayrollSchema.parse(await c.req.json())
+  const body = getValidated<typeof createPayrollSchema>(c, 'json')!
 
   const [payroll] = await db.insert(payrolls).values({
     tenantId: tenant.tenantId,
@@ -112,10 +114,10 @@ payrollRouter.post('/', async (c) => {
   return c.json({ payroll }, 201)
 })
 
-payrollRouter.patch('/:id', async (c) => {
+payrollRouter.patch('/:id', validate(createPayrollSchema.partial(), 'json'), async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const body = createPayrollSchema.partial().parse(await c.req.json())
+  const body = getValidated<typeof createPayrollSchema>(c, 'json')!
 
   const [updated] = await db
     .update(payrolls)
@@ -158,17 +160,25 @@ payrollRouter.get('/', async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const { month, year } = c.req.query()
+  const pagination = parsePagination(c)
 
   const conditions: SQL[] = [eq(payrolls.tenantId, tenant.tenantId), eq(payrolls.userId, authUser.id)]
   if (month) conditions.push(eq(payrolls.periodMonth, parseInt(month)))
   if (year) conditions.push(eq(payrolls.periodYear, parseInt(year)))
 
-  const data = await db.query.payrolls.findMany({
-    where: and(...conditions),
-    orderBy: (fields, { desc }) => [desc(fields.periodYear), desc(fields.periodMonth)],
-  })
+  const where = and(...conditions)
 
-  return c.json({ payrolls: data })
+  const [data, [{ value: total }]] = await Promise.all([
+    db.query.payrolls.findMany({
+      where,
+      orderBy: (fields, { desc }) => [desc(fields.periodYear), desc(fields.periodMonth)],
+      limit: pagination.limit,
+      offset: pagination.offset,
+    }),
+    db.select({ value: count() }).from(payrolls).where(where),
+  ])
+
+  return c.json(paginated('payrolls', data, Number(total), pagination))
 })
 
 payrollRouter.get('/:id', async (c) => {

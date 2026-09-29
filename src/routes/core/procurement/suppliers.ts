@@ -1,11 +1,13 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, SQL, ilike } from 'drizzle-orm'
+import { eq, and, SQL, ilike, count } from 'drizzle-orm'
 import { db } from '../../../db'
 import { suppliers } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
+import { parsePagination, paginated } from '../../../lib/pagination'
+import { validate, getValidated } from '../../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -25,22 +27,32 @@ const createSupplierSchema = z.object({
   status: z.enum(['active', 'archived']).default('active'),
 })
 
+const updateSupplierSchema = createSupplierSchema.partial()
+
 // List suppliers
 suppliersRouter.get('/', async (c) => {
   const tenant = c.get('tenant')
   const { search, status } = c.req.query()
+  const pagination = parsePagination(c)
 
   const conditions: SQL[] = [eq(suppliers.tenantId, tenant.tenantId)]
 
   if (search) conditions.push(ilike(suppliers.companyName, `%${search}%`))
   if (status) conditions.push(eq(suppliers.status, status))
 
-  const data = await db.query.suppliers.findMany({
-    where: and(...conditions),
-    orderBy: (fields, { asc }) => [asc(fields.companyName)],
-  })
+  const where = and(...conditions)
 
-  return c.json({ suppliers: data, total: data.length })
+  const [data, [{ value: total }]] = await Promise.all([
+    db.query.suppliers.findMany({
+      where,
+      orderBy: (fields, { asc }) => [asc(fields.companyName)],
+      limit: pagination.limit,
+      offset: pagination.offset,
+    }),
+    db.select({ value: count() }).from(suppliers).where(where),
+  ])
+
+  return c.json(paginated('suppliers', data, Number(total), pagination))
 })
 
 // Get supplier detail
@@ -60,7 +72,7 @@ suppliersRouter.get('/:id', async (c) => {
 // Create supplier
 suppliersRouter.post('/', async (c) => {
   const tenant = c.get('tenant')
-  const body = createSupplierSchema.parse(await c.req.json())
+  const body = getValidated<typeof createSupplierSchema>(c, 'json')!
 
   const [supplier] = await db.insert(suppliers).values({
     ...body,
@@ -74,7 +86,7 @@ suppliersRouter.post('/', async (c) => {
 suppliersRouter.patch('/:id', async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const body = createSupplierSchema.partial().parse(await c.req.json())
+  const body = getValidated<typeof updateSupplierSchema>(c, 'json')!
 
   const [updated] = await db
     .update(suppliers)

@@ -1,12 +1,14 @@
 import { Hono, type Context } from 'hono'
 import { z } from 'zod'
-import { eq, and } from 'drizzle-orm'
+import { eq, and, count } from 'drizzle-orm'
 import { db } from '../../../db'
 import { overtimeRequests } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { requireModuleAccessExcept } from '../../../middleware/rbac'
 import { requireApprover } from '../../../lib/approvals'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
+import { parsePagination, paginated } from '../../../lib/pagination'
+import { validate, getValidated } from '../../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -26,17 +28,26 @@ const overtimeSchema = z.object({
 overtimeRouter.get('/', async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
-  const data = await db.query.overtimeRequests.findMany({
-    where: and(eq(overtimeRequests.tenantId, tenant.tenantId), eq(overtimeRequests.userId, authUser.id)),
-    orderBy: (fields, { desc }) => [desc(fields.overtimeDate)],
-  })
-  return c.json({ overtimeRequests: data })
+  const pagination = parsePagination(c)
+  const where = and(eq(overtimeRequests.tenantId, tenant.tenantId), eq(overtimeRequests.userId, authUser.id))
+
+  const [data, [{ value: total }]] = await Promise.all([
+    db.query.overtimeRequests.findMany({
+      where,
+      orderBy: (fields, { desc }) => [desc(fields.overtimeDate)],
+      limit: pagination.limit,
+      offset: pagination.offset,
+    }),
+    db.select({ value: count() }).from(overtimeRequests).where(where),
+  ])
+
+  return c.json(paginated('overtimeRequests', data, Number(total), pagination))
 })
 
 overtimeRouter.post('/', async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
-  const body = overtimeSchema.parse(await c.req.json())
+  const body = getValidated<typeof overtimeSchema>(c, 'json')!
 
   const [request] = await db.insert(overtimeRequests).values({
     tenantId: tenant.tenantId,
@@ -66,10 +77,10 @@ overtimeRouter.get('/:id', async (c) => {
   return c.json({ overtimeRequest })
 })
 
-overtimeRouter.patch('/:id', async (c) => {
+overtimeRouter.patch('/:id', validate(overtimeSchema.partial(), 'json'), async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const body = overtimeSchema.partial().parse(await c.req.json())
+  const body = getValidated<typeof overtimeSchema>(c, 'json')!
 
   const [updated] = await db
     .update(overtimeRequests)

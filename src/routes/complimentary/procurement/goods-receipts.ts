@@ -1,11 +1,13 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, SQL, inArray } from 'drizzle-orm'
+import { eq, and, SQL, inArray, count } from 'drizzle-orm'
 import { db } from '../../../db'
 import { goodsReceipts, purchaseOrders } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
+import { parsePagination, paginated } from '../../../lib/pagination'
+import { validate, getValidated } from '../../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -23,6 +25,8 @@ const createGRSchema = z.object({
   notes: z.string().optional(),
 })
 
+const updateGRSchema = createGRSchema.partial()
+
 // List GRs
 goodsReceiptsRouter.get('/', async (c) => {
   const tenant = c.get('tenant')
@@ -33,12 +37,19 @@ goodsReceiptsRouter.get('/', async (c) => {
 
   if (status) conditions.push(eq(goodsReceipts.status, status))
 
-  const data = await db.query.goodsReceipts.findMany({
-    where: and(...conditions),
-    orderBy: (fields, { desc }) => [desc(fields.receivedDate)],
-  })
+  const pagination = parsePagination(c)
 
-  return c.json({ goodsReceipts: data, total: data.length })
+  const [data, [{ value: total }]] = await Promise.all([
+    db.query.goodsReceipts.findMany({
+      where: and(...conditions),
+      orderBy: (fields, { desc }) => [desc(fields.receivedDate)],
+      limit: pagination.limit,
+      offset: pagination.offset,
+    }),
+    db.select({ value: count() }).from(goodsReceipts).where(and(...conditions)),
+  ])
+
+  return c.json(paginated('goodsReceipts', data, Number(total), pagination))
 })
 
 // Get GR detail
@@ -61,7 +72,7 @@ goodsReceiptsRouter.get('/:id', async (c) => {
 goodsReceiptsRouter.post('/', async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
-  const body = createGRSchema.parse(await c.req.json())
+  const body = getValidated<typeof createGRSchema>(c, 'json')!
 
   const validPo = await db.query.purchaseOrders.findFirst({
     where: and(eq(purchaseOrders.id, body.poId), eq(purchaseOrders.tenantId, tenant.tenantId)),
@@ -81,7 +92,7 @@ goodsReceiptsRouter.post('/', async (c) => {
 goodsReceiptsRouter.patch('/:id', async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const body = createGRSchema.partial().parse(await c.req.json())
+  const body = getValidated<typeof updateGRSchema>(c, 'json')!
 
   const tenantPoIds = db.select({ id: purchaseOrders.id }).from(purchaseOrders).where(eq(purchaseOrders.tenantId, tenant.tenantId))
 

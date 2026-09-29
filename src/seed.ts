@@ -27,7 +27,6 @@ async function seed() {
   const [tenant1] = await db.insert(tenants).values({
     name: 'PT Maju Jaya',
     slug: 'pt-maju-jaya',
-    dbSchema: 'tenant_maju_jaya',
     plan: 'pro',
     status: 'active',
   }).returning()
@@ -36,7 +35,6 @@ async function seed() {
   const [_tenant2] = await db.insert(tenants).values({
     name: 'CV Berkah Jaya',
     slug: 'cv-berkah-jaya',
-    dbSchema: 'tenant_berkah_jaya',
     plan: 'free',
     status: 'active',
   }).returning()

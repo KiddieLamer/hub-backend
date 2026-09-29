@@ -1,10 +1,13 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and } from 'drizzle-orm'
+import { eq, and, or, ilike, count, desc } from 'drizzle-orm'
 import { db } from '../../db'
 import { tenantMembers, users, tenants, positions, roles, userRoles, rolePermissions, permissions } from '../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../middleware/auth'
 import { tenantMiddleware, type TenantVariables } from '../../middleware/tenant'
+import { parsePagination, paginated } from '../../lib/pagination'
+import { recordAudit } from '../../lib/audit'
+import { validate, getValidated } from '../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -54,29 +57,66 @@ async function grantTenantRole(userId: string, roleId: string, tenantId: string)
 
 membersRouter.get('/', async (c) => {
   const tenant = c.get('tenant')
+  const { search } = c.req.query()
 
-  const data = await db
-    .select({
-      id: tenantMembers.id,
-      userId: tenantMembers.userId,
-      role: tenantMembers.role,
-      jobTitle: tenantMembers.jobTitle,
-      positionId: tenantMembers.positionId,
-      positionName: positions.name,
-      createdAt: tenantMembers.createdAt,
-      userFullName: users.fullName,
-      userEmail: users.email,
-      userAvatarUrl: users.avatarUrl,
-      userPhoneNumber: users.phoneNumber,
-      userDepartment: users.department,
-      userStatus: users.status,
-    })
-    .from(tenantMembers)
-    .innerJoin(users, eq(tenantMembers.userId, users.id))
-    .leftJoin(positions, eq(tenantMembers.positionId, positions.id))
-    .where(eq(tenantMembers.tenantId, tenant.tenantId))
+  // Opt-in pagination: callers that pass page/limit get a paged response,
+  // everyone else (roles picker, company page) keeps the full list.
+  const wantsPagination =
+    c.req.query('page') !== undefined || c.req.query('limit') !== undefined
+  const rawPage = Number.parseInt(String(c.req.query('page') ?? ''), 10)
+  const rawLimit = Number.parseInt(String(c.req.query('limit') ?? ''), 10)
+  const page = Number.isFinite(rawPage) ? Math.max(rawPage, 1) : 1
+  const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 100) : 20
 
-  return c.json({ members: data })
+  const selectMemberRows = () =>
+    db
+      .select({
+        id: tenantMembers.id,
+        userId: tenantMembers.userId,
+        role: tenantMembers.role,
+        jobTitle: tenantMembers.jobTitle,
+        positionId: tenantMembers.positionId,
+        positionName: positions.name,
+        createdAt: tenantMembers.createdAt,
+        userFullName: users.fullName,
+        userEmail: users.email,
+        userAvatarUrl: users.avatarUrl,
+        userPhoneNumber: users.phoneNumber,
+        userDepartment: users.department,
+        userStatus: users.status,
+        userEmployeeId: users.employeeId,
+        userKtpNumber: users.ktpNumber,
+        userDateOfBirth: users.dateOfBirth,
+        userAddress: users.address,
+      })
+      .from(tenantMembers)
+      .innerJoin(users, eq(tenantMembers.userId, users.id))
+      .leftJoin(positions, eq(tenantMembers.positionId, positions.id))
+
+  const conditions = [eq(tenantMembers.tenantId, tenant.tenantId)]
+  if (search) {
+    const term = `%${search.replace(/[%_\\]/g, '\\$&')}%`
+    conditions.push(or(ilike(users.fullName, term), ilike(users.email, term))!)
+  }
+  const where = and(...conditions)
+  const orderBy = desc(tenantMembers.createdAt)
+
+  if (!wantsPagination) {
+    const data = await selectMemberRows().where(where).orderBy(orderBy)
+    return c.json({ members: data })
+  }
+
+  const offset = (page - 1) * limit
+  const [data, totalRows] = await Promise.all([
+    selectMemberRows().where(where).orderBy(orderBy).limit(limit).offset(offset),
+    db
+      .select({ total: count() })
+      .from(tenantMembers)
+      .innerJoin(users, eq(tenantMembers.userId, users.id))
+      .where(where),
+  ])
+
+  return c.json({ members: data, total: totalRows[0]?.total ?? 0, page, limit })
 })
 
 membersRouter.get('/me', async (c) => {
@@ -122,7 +162,7 @@ membersRouter.post('/', async (c) => {
     return c.json({ error: 'Tenant not found' }, 404)
   }
 
-  const body = addMemberSchema.parse(await c.req.json())
+  const body = getValidated<typeof addMemberSchema>(c, 'json')!
 
   const user = await db.query.users.findFirst({
     where: eq(users.id, body.userId),
@@ -139,6 +179,23 @@ membersRouter.post('/', async (c) => {
   })
   if (existing) {
     return c.json({ error: 'User is already a member of this tenant' }, 409)
+  }
+
+  // Enforce tenant maxUsers (business rule: access is admin-controlled).
+  // Hub-admin bypasses the cap so platform staff can always manage tenants.
+  if (tenant.tenantRole !== 'hub-admin') {
+    const [{ total }] = await db
+      .select({ total: count() })
+      .from(tenantMembers)
+      .where(eq(tenantMembers.tenantId, tenant.tenantId))
+
+    const cap = tenantExists.maxUsers ?? 5
+    if (Number(total) >= cap) {
+      return c.json(
+        { error: `Batas jumlah user tenant tercapai (${cap} user)` },
+        403,
+      )
+    }
   }
 
   let position: { id: string; defaultRoleId: string | null } | undefined
@@ -168,6 +225,13 @@ membersRouter.post('/', async (c) => {
     await grantTenantRole(body.userId, position.defaultRoleId, tenant.tenantId)
   }
 
+  await recordAudit(c, tenant.tenantId, {
+    action: 'member.add',
+    module: 'umas',
+    recordId: member.userId,
+    newValues: { role: member.role, jobTitle: member.jobTitle, positionId: member.positionId },
+  })
+
   return c.json({ member }, 201)
 })
 
@@ -177,7 +241,7 @@ membersRouter.patch('/:id/role', async (c) => {
     return c.json({ error: 'Insufficient permissions' }, 403)
   }
   const { id } = c.req.param()
-  const body = updateMemberRoleSchema.parse(await c.req.json())
+  const body = getValidated<typeof updateMemberRoleSchema>(c, 'json')!
 
   const member = await db.query.tenantMembers.findFirst({
     where: and(eq(tenantMembers.id, id), eq(tenantMembers.tenantId, tenant.tenantId)),
@@ -192,6 +256,14 @@ membersRouter.patch('/:id/role', async (c) => {
     .where(and(eq(tenantMembers.id, id), eq(tenantMembers.tenantId, tenant.tenantId)))
     .returning()
 
+  await recordAudit(c, tenant.tenantId, {
+    action: 'member.role.update',
+    module: 'umas',
+    recordId: member.userId,
+    oldValues: { role: member.role },
+    newValues: { role: body.role },
+  })
+
   return c.json({ member: updated })
 })
 
@@ -201,7 +273,7 @@ membersRouter.patch('/:id/job-title', async (c) => {
     return c.json({ error: 'Insufficient permissions' }, 403)
   }
   const { id } = c.req.param()
-  const body = updateJobTitleSchema.parse(await c.req.json())
+  const body = getValidated<typeof updateJobTitleSchema>(c, 'json')!
 
   const [updated] = await db
     .update(tenantMembers)
@@ -222,7 +294,7 @@ membersRouter.patch('/:id/position', async (c) => {
     return c.json({ error: 'Insufficient permissions' }, 403)
   }
   const { id } = c.req.param()
-  const body = updateMemberPositionSchema.parse(await c.req.json())
+  const body = getValidated<typeof updateMemberPositionSchema>(c, 'json')!
 
   const member = await db.query.tenantMembers.findFirst({
     where: and(eq(tenantMembers.id, id), eq(tenantMembers.tenantId, tenant.tenantId)),
@@ -285,6 +357,13 @@ membersRouter.delete('/:id', async (c) => {
     eq(userRoles.tenantId, tenant.tenantId),
   ))
   await db.delete(tenantMembers).where(eq(tenantMembers.id, id))
+
+  await recordAudit(c, tenant.tenantId, {
+    action: 'member.remove',
+    module: 'umas',
+    recordId: member.userId,
+    oldValues: { role: member.role, jobTitle: member.jobTitle, positionId: member.positionId },
+  })
 
   return c.json({ message: 'Member removed' })
 })

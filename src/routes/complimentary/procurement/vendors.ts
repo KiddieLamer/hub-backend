@@ -1,11 +1,13 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, SQL, ilike } from 'drizzle-orm'
+import { eq, and, SQL, ilike, count } from 'drizzle-orm'
 import { db } from '../../../db'
 import { vendors } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
+import { parsePagination, paginated } from '../../../lib/pagination'
+import { validate, getValidated } from '../../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -24,6 +26,8 @@ const createVendorSchema = z.object({
   bankDetails: z.string().optional(),
   rating: z.number().min(0).max(5).optional(),
 })
+
+const updateVendorSchema = createVendorSchema.partial()
 
 // List vendors
 vendorsRouter.get('/', async (c) => {
@@ -59,7 +63,7 @@ vendorsRouter.get('/:id', async (c) => {
 // Create vendor
 vendorsRouter.post('/', async (c) => {
   const tenant = c.get('tenant')
-  const body = createVendorSchema.parse(await c.req.json())
+  const body = getValidated<typeof createVendorSchema>(c, 'json')!
 
   const [vendor] = await db.insert(vendors).values({
     ...body,
@@ -74,7 +78,7 @@ vendorsRouter.post('/', async (c) => {
 vendorsRouter.patch('/:id', async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const body = createVendorSchema.partial().parse(await c.req.json())
+  const body = getValidated<typeof updateVendorSchema>(c, 'json')!
 
   const [updated] = await db
     .update(vendors)

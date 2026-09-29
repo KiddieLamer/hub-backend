@@ -1,11 +1,14 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, isNull } from 'drizzle-orm'
+import { eq, and, isNull, count } from 'drizzle-orm'
 import { db } from '../../db'
 import { tenants, tenantMembers, users } from '../../db/schema'
 import { TENANT_CATEGORIES, normalizeCategory, seedTenantTemplate } from '../../lib/tenant-templates'
 import { authMiddleware, type Variables as AuthVariables } from '../../middleware/auth'
 import { requireHubAdmin } from '../../middleware/platform'
+import { parsePagination, paginated } from '../../lib/pagination'
+import { recordAudit } from '../../lib/audit'
+import { validate, getValidated } from '../../middleware/validate'
 
 type Variables = AuthVariables & {
   tenant: { tenantId: string; tenantRole: string }
@@ -76,15 +79,22 @@ tenantsRouter.get('/', async (c) => {
 })
 
 tenantsRouter.get('/all', requireHubAdmin, async (c) => {
-  const allTenants = await db.query.tenants.findMany({
-    orderBy: (tenants, { desc }) => [desc(tenants.createdAt)],
-  })
+  const pagination = parsePagination(c)
 
-  return c.json({ tenants: allTenants })
+  const [allTenants, [{ value: total }]] = await Promise.all([
+    db.query.tenants.findMany({
+      orderBy: (tenants, { desc }) => [desc(tenants.createdAt)],
+      limit: pagination.limit,
+      offset: pagination.offset,
+    }),
+    db.select({ value: count() }).from(tenants),
+  ])
+
+  return c.json(paginated('tenants', allTenants, Number(total), pagination))
 })
 
 tenantsRouter.post('/', requireHubAdmin, async (c) => {
-  const body = createTenantSchema.parse(await c.req.json())
+  const body = getValidated<typeof createTenantSchema>(c, 'json')!
 
   const existing = await db.query.tenants.findFirst({
     where: eq(tenants.slug, body.slug),
@@ -94,15 +104,21 @@ tenantsRouter.post('/', requireHubAdmin, async (c) => {
     return c.json({ error: 'Slug already taken' }, 409)
   }
 
-  const dbSchemaName = `tenant_${body.slug.replace(/-/g, '_')}`
-
+  // Shared-schema model: isolasi lewat kolom tenant_id di tabel terkait,
+  // bukan schema PostgreSQL terpisah per tenant.
   const [tenant] = await db.insert(tenants).values({
     ...body,
-    dbSchema: dbSchemaName,
   }).returning()
 
   // Seed industry template: roles + positions + default mapping.
   await seedTenantTemplate(tenant.id, body.category)
+
+  await recordAudit(c, tenant.id, {
+    action: 'tenant.create',
+    module: 'tenants',
+    recordId: tenant.id,
+    newValues: { name: tenant.name, slug: tenant.slug, category: tenant.category },
+  })
 
   return c.json({ tenant }, 201)
 })
@@ -181,7 +197,7 @@ tenantsRouter.patch('/current', async (c) => {
     return c.json({ error: 'Insufficient permissions' }, 403)
   }
 
-  const body = updateTenantSchema.parse(await c.req.json())
+  const body = getValidated<typeof updateTenantSchema>(c, 'json')!
 
   const [updated] = await db
     .update(tenants)
@@ -197,7 +213,7 @@ const switchTenantSchema = z.object({
 })
 tenantsRouter.post('/switch', async (c) => {
   const user = c.get('user')
-  const body = switchTenantSchema.parse(await c.req.json())
+  const body = getValidated<typeof switchTenantSchema>(c, 'json')!
 
   const tenant = await db.query.tenants.findFirst({
     where: and(eq(tenants.id, body.tenantId), isNull(tenants.deletedAt)),
@@ -227,8 +243,22 @@ tenantsRouter.post('/switch', async (c) => {
 tenantsRouter.delete('/:id', requireHubAdmin, async (c) => {
   const { id } = c.req.param()
 
+  const tenant = await db.query.tenants.findFirst({
+    where: eq(tenants.id, id),
+  })
+  if (!tenant) {
+    return c.json({ error: 'Tenant not found' }, 404)
+  }
+
   await db.delete(tenantMembers).where(eq(tenantMembers.tenantId, id))
   await db.delete(tenants).where(eq(tenants.id, id))
+
+  await recordAudit(c, id, {
+    action: 'tenant.delete',
+    module: 'tenants',
+    recordId: id,
+    oldValues: { name: tenant.name, slug: tenant.slug, status: tenant.status },
+  })
 
   return c.json({ success: true })
 })

@@ -1,11 +1,13 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq } from 'drizzle-orm'
+import { eq, count } from 'drizzle-orm'
 import { db } from '../../db'
 import { shifts } from '../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../middleware/auth'
 import { requireModuleAccess } from '../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../middleware/tenant'
+import { parsePagination, paginated } from '../../lib/pagination'
+import { validate, getValidated } from '../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -23,16 +25,25 @@ const createShiftSchema = z.object({
 
 shiftsRouter.get('/', async (c) => {
   const tenant = c.get('tenant')
-  const data = await db.query.shifts.findMany({
-    where: eq(shifts.tenantId, tenant.tenantId),
-    orderBy: (fields, { asc }) => [asc(fields.name)],
-  })
-  return c.json({ shifts: data })
+  const pagination = parsePagination(c)
+  const where = eq(shifts.tenantId, tenant.tenantId)
+
+  const [data, [{ value: total }]] = await Promise.all([
+    db.query.shifts.findMany({
+      where,
+      orderBy: (fields, { asc }) => [asc(fields.name)],
+      limit: pagination.limit,
+      offset: pagination.offset,
+    }),
+    db.select({ value: count() }).from(shifts).where(where),
+  ])
+
+  return c.json(paginated('shifts', data, Number(total), pagination))
 })
 
 shiftsRouter.post('/', async (c) => {
   const tenant = c.get('tenant')
-  const body = createShiftSchema.parse(await c.req.json())
+  const body = getValidated<typeof createShiftSchema>(c, 'json')!
 
   const [shift] = await db.insert(shifts).values({
     ...body,
@@ -44,7 +55,7 @@ shiftsRouter.post('/', async (c) => {
 
 shiftsRouter.patch('/:id', async (c) => {
   const { id } = c.req.param()
-  const body = createShiftSchema.partial().parse(await c.req.json())
+  const body = getValidated<ReturnType<typeof createShiftSchema.partial>>(c, 'json')!
 
   const [updated] = await db
     .update(shifts)

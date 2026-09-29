@@ -1,11 +1,13 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, inArray } from 'drizzle-orm'
+import { eq, and, inArray, count } from 'drizzle-orm'
 import { db } from '../../../db'
 import { taskTags, projects } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
+import { parsePagination, paginated } from '../../../lib/pagination'
+import { validate, getValidated } from '../../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -20,9 +22,12 @@ const createTagSchema = z.object({
   colorCode: z.string().max(20).default('#EF4444'),
 })
 
+const updateTagSchema = createTagSchema.partial()
+
 tagsRouter.get('/', async (c) => {
   const tenant = c.get('tenant')
   const { projectId } = c.req.query()
+  const pagination = parsePagination(c)
 
   const tenantProjectIds = db
     .select({ id: projects.id })
@@ -33,17 +38,24 @@ tagsRouter.get('/', async (c) => {
 
   if (projectId) conditions.push(eq(taskTags.projectId, projectId))
 
-  const data = await db.query.taskTags.findMany({
-    where: and(...conditions),
-    orderBy: (fields, { asc }) => [asc(fields.name)],
-  })
+  const where = and(...conditions)
 
-  return c.json({ tags: data, total: data.length })
+  const [data, [{ value: total }]] = await Promise.all([
+    db.query.taskTags.findMany({
+      where,
+      orderBy: (fields, { asc }) => [asc(fields.name)],
+      limit: pagination.limit,
+      offset: pagination.offset,
+    }),
+    db.select({ value: count() }).from(taskTags).where(where),
+  ])
+
+  return c.json(paginated('tags', data, Number(total), pagination))
 })
 
 tagsRouter.post('/', async (c) => {
   const tenant = c.get('tenant')
-  const body = createTagSchema.parse(await c.req.json())
+  const body = getValidated<typeof createTagSchema>(c, 'json')!
 
   const tenantProjectIds = db
     .select({ id: projects.id })
@@ -64,7 +76,7 @@ tagsRouter.post('/', async (c) => {
 tagsRouter.patch('/:id', async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const body = createTagSchema.partial().parse(await c.req.json())
+  const body = getValidated<typeof updateTagSchema>(c, 'json')!
 
   const tenantProjectIds = db
     .select({ id: projects.id })

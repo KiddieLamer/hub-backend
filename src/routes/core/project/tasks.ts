@@ -1,11 +1,13 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, inArray, SQL } from 'drizzle-orm'
+import { eq, and, inArray, SQL, count } from 'drizzle-orm'
 import { db } from '../../../db'
 import { tasks, taskAssignees, taskComments, taskTagMappings, projects } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
+import { parsePagination, paginated } from '../../../lib/pagination'
+import { validate, getValidated } from '../../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -28,6 +30,8 @@ const createTaskSchema = z.object({
   position: z.number().default(0),
 })
 
+const updateTaskSchema = createTaskSchema.partial()
+
 const moveTaskSchema = z.object({
   columnId: z.string().uuid(),
   position: z.number(),
@@ -49,6 +53,7 @@ const taskTagSchema = z.object({
 tasksRouter.get('/', async (c) => {
   const tenant = c.get('tenant')
   const { projectId, columnId, assignedTo, priority } = c.req.query()
+  const pagination = parsePagination(c)
 
   const tenantProjectIds = db
     .select({ id: projects.id })
@@ -62,12 +67,19 @@ tasksRouter.get('/', async (c) => {
   if (assignedTo) conditions.push(eq(tasks.assignedTo, assignedTo))
   if (priority) conditions.push(eq(tasks.priority, priority))
 
-  const data = await db.query.tasks.findMany({
-    where: and(...conditions),
-    orderBy: (fields, { asc }) => [asc(fields.position)],
-  })
+  const where = and(...conditions)
 
-  return c.json({ tasks: data, total: data.length })
+  const [data, [{ value: total }]] = await Promise.all([
+    db.query.tasks.findMany({
+      where,
+      orderBy: (fields, { asc }) => [asc(fields.position)],
+      limit: pagination.limit,
+      offset: pagination.offset,
+    }),
+    db.select({ value: count() }).from(tasks).where(where),
+  ])
+
+  return c.json(paginated('tasks', data, Number(total), pagination))
 })
 
 tasksRouter.get('/:id', async (c) => {
@@ -104,7 +116,7 @@ tasksRouter.get('/:id', async (c) => {
 tasksRouter.post('/', async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
-  const body = createTaskSchema.parse(await c.req.json())
+  const body = getValidated<typeof createTaskSchema>(c, 'json')!
 
   const tenantProjectIds = db
     .select({ id: projects.id })
@@ -137,7 +149,7 @@ tasksRouter.post('/', async (c) => {
 tasksRouter.patch('/:id', async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const body = createTaskSchema.partial().parse(await c.req.json())
+  const body = getValidated<typeof updateTaskSchema>(c, 'json')!
 
   const tenantProjectIds = db
     .select({ id: projects.id })
@@ -163,7 +175,7 @@ tasksRouter.patch('/:id', async (c) => {
 tasksRouter.post('/:id/move', async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const body = moveTaskSchema.parse(await c.req.json())
+  const body = getValidated<typeof moveTaskSchema>(c, 'json')!
 
   const tenantProjectIds = db
     .select({ id: projects.id })
@@ -188,7 +200,7 @@ tasksRouter.post('/:id/move', async (c) => {
 tasksRouter.post('/:id/assignees', async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const { userId } = assigneeSchema.parse(await c.req.json())
+  const { userId } = getValidated<typeof assigneeSchema>(c, 'json')!
 
   const tenantProjectIds = db
     .select({ id: projects.id })
@@ -235,7 +247,7 @@ tasksRouter.post('/:id/comments', async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const { id } = c.req.param()
-  const body = commentSchema.parse(await c.req.json())
+  const body = getValidated<typeof commentSchema>(c, 'json')!
 
   const tenantProjectIds = db
     .select({ id: projects.id })
@@ -280,7 +292,7 @@ tasksRouter.delete('/:id/comments/:commentId', async (c) => {
 tasksRouter.post('/:id/tags', async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const { tagId } = taskTagSchema.parse(await c.req.json())
+  const { tagId } = getValidated<typeof taskTagSchema>(c, 'json')!
 
   const tenantProjectIds = db
     .select({ id: projects.id })

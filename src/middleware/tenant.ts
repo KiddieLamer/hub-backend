@@ -42,6 +42,13 @@ export async function tenantMiddleware(c: Context<{ Variables: { user: AuthUser 
     return c.json({ error: 'Tenant not found' }, 404)
   }
 
+  // Access control (ASSESSMENT.md): tenant aktif = boleh pakai platform.
+  // Hub Admin tetap boleh akses tenant manapun (untuk kelola/reaktivasi),
+  // tapi user biasa dari tenant non-aktif diblokir.
+  if (!isHubAdmin && tenant && tenant.status !== 'active') {
+    return c.json({ error: 'Tenant inactive' }, 403)
+  }
+
   c.set('tenant', {
     tenantId: tenantId,
     tenantRole: membership?.role || 'hub-admin',

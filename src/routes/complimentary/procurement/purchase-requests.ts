@@ -1,12 +1,14 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, SQL, ilike } from 'drizzle-orm'
+import { eq, and, SQL, ilike, count } from 'drizzle-orm'
 import { db } from '../../../db'
 import { purchaseRequests, purchaseRequestItems } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { requireModuleAccessExcept } from '../../../middleware/rbac'
 import { requireApprover } from '../../../lib/approvals'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
+import { parsePagination, paginated } from '../../../lib/pagination'
+import { validate, getValidated } from '../../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -30,6 +32,8 @@ const createPRSchema = z.object({
     notesSpecification: z.string().optional(),
   })).min(1),
 })
+
+const updatePRSchema = createPRSchema.partial()
 
 const approveSchema = z.object({
   approved: z.boolean(),
@@ -99,7 +103,7 @@ purchaseRequestsRouter.get('/:id', async (c) => {
 purchaseRequestsRouter.post('/', async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
-  const body = createPRSchema.parse(await c.req.json())
+  const body = getValidated<typeof createPRSchema>(c, 'json')!
 
   const [pr] = await db.insert(purchaseRequests).values({
     ...body,
@@ -130,7 +134,7 @@ purchaseRequestsRouter.post('/', async (c) => {
 purchaseRequestsRouter.patch('/:id', async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const body = createPRSchema.partial().parse(await c.req.json())
+  const body = getValidated<typeof updatePRSchema>(c, 'json')!
 
   const [updated] = await db
     .update(purchaseRequests)
@@ -213,7 +217,7 @@ purchaseRequestsRouter.post(
     const tenant = c.get('tenant')
     const authUser = c.get('user')
     const { id } = c.req.param()
-    const body = approveSchema.parse(await c.req.json())
+    const body = getValidated<typeof approveSchema>(c, 'json')!
 
     const pr = await db.query.purchaseRequests.findFirst({
       where: and(eq(purchaseRequests.id, id), eq(purchaseRequests.tenantId, tenant.tenantId)),

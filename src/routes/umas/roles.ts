@@ -6,6 +6,9 @@ import { requireModuleAccess } from '../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../middleware/tenant'
 import { z } from 'zod'
 import { eq, and, inArray, count } from 'drizzle-orm'
+import { parsePagination, paginated } from '../../lib/pagination'
+import { recordAudit } from '../../lib/audit'
+import { validate, getValidated } from '../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -15,11 +18,32 @@ rolesRouter.use('*', authMiddleware)
 rolesRouter.use('*', tenantMiddleware)
 rolesRouter.use('*', requireModuleAccess('roles:read', 'roles:write'))
 
+const createRoleSchema = z.object({
+  name: z.string().min(1).max(100),
+  description: z.string().max(500).optional(),
+  permissionIds: z.array(z.string().uuid()).optional(),
+})
+
+const setPermissionsSchema = z.object({
+  permissionIds: z.array(z.string().uuid()),
+})
+
+const assignRoleSchema = z.object({
+  userId: z.string().uuid(),
+})
+
 rolesRouter.get('/', async (c) => {
   const tenant = c.get('tenant')
-  const tenantRoles = await db.query.roles.findMany({
-    where: eq(roles.tenantId, tenant.tenantId),
-  })
+  const pagination = parsePagination(c)
+
+  const [tenantRoles, totalRows] = await Promise.all([
+    db.query.roles.findMany({
+      where: eq(roles.tenantId, tenant.tenantId),
+      limit: pagination.limit,
+      offset: pagination.offset,
+    }),
+    db.select({ total: count() }).from(roles).where(eq(roles.tenantId, tenant.tenantId)),
+  ])
 
   const roleIds = tenantRoles.map((r) => r.id)
   let permMap: Record<string, { id: string; name: string }[]> = {}
@@ -68,11 +92,7 @@ rolesRouter.post('/', async (c) => {
     return c.json({ error: 'Insufficient permissions' }, 403)
   }
 
-  const body = z.object({
-    name: z.string().min(1).max(100),
-    description: z.string().max(500).optional(),
-    permissionIds: z.array(z.string().uuid()).optional(),
-  }).parse(await c.req.json())
+  const body = getValidated<typeof createRoleSchema>(c, 'json')!
 
   const existing = await db.query.roles.findFirst({
     where: and(eq(roles.tenantId, tenant.tenantId), eq(roles.name, body.name)),
@@ -99,6 +119,13 @@ rolesRouter.post('/', async (c) => {
       await db.insert(rolePermissions).values(toInsert)
     }
   }
+
+  await recordAudit(c, tenant.tenantId, {
+    action: 'role.create',
+    module: 'umas',
+    recordId: role.id,
+    newValues: { name: role.name, description: role.description, permissionIds: body.permissionIds ?? [] },
+  })
 
   return c.json({ role }, 201)
 })
@@ -131,6 +158,13 @@ rolesRouter.delete('/:id', async (c) => {
   await db.delete(userRoles).where(and(eq(userRoles.roleId, id), eq(userRoles.tenantId, tenant.tenantId)))
   await db.delete(roles).where(eq(roles.id, id))
 
+  await recordAudit(c, tenant.tenantId, {
+    action: 'role.delete',
+    module: 'umas',
+    recordId: id,
+    oldValues: { name: role.name, description: role.description },
+  })
+
   return c.json({ success: true })
 })
 
@@ -156,7 +190,7 @@ rolesRouter.patch('/:id/permissions', async (c) => {
     return c.json({ error: 'Role not found' }, 404)
   }
 
-  const body = z.object({ permissionIds: z.array(z.string().uuid()) }).parse(await c.req.json())
+  const body = getValidated<typeof setPermissionsSchema>(c, 'json')!
 
   const permIds = [...new Set(body.permissionIds)]
   if (permIds.length > 0) {
@@ -171,10 +205,23 @@ rolesRouter.patch('/:id/permissions', async (c) => {
     }
   }
 
+  const previousPerms = await db
+    .select({ permissionId: rolePermissions.permissionId })
+    .from(rolePermissions)
+    .where(eq(rolePermissions.roleId, id))
+
   await db.delete(rolePermissions).where(eq(rolePermissions.roleId, id))
   if (permIds.length > 0) {
     await db.insert(rolePermissions).values(permIds.map((permissionId) => ({ roleId: id, permissionId })))
   }
+
+  await recordAudit(c, tenant.tenantId, {
+    action: 'role.permissions.update',
+    module: 'umas',
+    recordId: id,
+    oldValues: { permissionIds: previousPerms.map((p) => p.permissionId) },
+    newValues: { permissionIds: permIds },
+  })
 
   return c.json({ success: true })
 })
@@ -221,7 +268,7 @@ rolesRouter.post('/:id/assign', async (c) => {
     return c.json({ error: 'Role not found' }, 404)
   }
 
-  const body = z.object({ userId: z.string().uuid() }).parse(await c.req.json())
+  const body = getValidated<typeof assignRoleSchema>(c, 'json')!
 
   const target = await db.query.users.findFirst({ where: eq(users.id, body.userId) })
   if (!target) {
@@ -252,6 +299,13 @@ rolesRouter.post('/:id/assign', async (c) => {
     tenantId: tenant.tenantId,
   }).returning()
 
+  await recordAudit(c, tenant.tenantId, {
+    action: 'role.assign',
+    module: 'umas',
+    recordId: body.userId,
+    newValues: { roleId: id, roleName: role.name },
+  })
+
   return c.json({ userRole }, 201)
 })
 
@@ -270,6 +324,13 @@ rolesRouter.delete('/:id/assign/:userId', async (c) => {
     eq(userRoles.roleId, id),
     eq(userRoles.tenantId, tenant.tenantId),
   ))
+
+  await recordAudit(c, tenant.tenantId, {
+    action: 'role.unassign',
+    module: 'umas',
+    recordId: userId,
+    oldValues: { roleId: id },
+  })
 
   return c.json({ success: true })
 })

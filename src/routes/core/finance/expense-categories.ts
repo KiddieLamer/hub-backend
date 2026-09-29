@@ -1,11 +1,13 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and } from 'drizzle-orm'
+import { eq, and, count } from 'drizzle-orm'
 import { db } from '../../../db'
 import { expenseCategories } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
+import { parsePagination, paginated } from '../../../lib/pagination'
+import { validate, getValidated } from '../../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -24,13 +26,20 @@ const createCategorySchema = z.object({
 // List categories
 expenseCategoriesRouter.get('/', async (c) => {
   const tenant = c.get('tenant')
+  const pagination = parsePagination(c)
+  const where = eq(expenseCategories.tenantId, tenant.tenantId)
 
-  const data = await db.query.expenseCategories.findMany({
-    where: eq(expenseCategories.tenantId, tenant.tenantId),
-    orderBy: (fields, { asc }) => [asc(fields.name)],
-  })
+  const [data, [{ value: total }]] = await Promise.all([
+    db.query.expenseCategories.findMany({
+      where,
+      orderBy: (fields, { asc }) => [asc(fields.name)],
+      limit: pagination.limit,
+      offset: pagination.offset,
+    }),
+    db.select({ value: count() }).from(expenseCategories).where(where),
+  ])
 
-  return c.json({ categories: data, total: data.length })
+  return c.json(paginated('categories', data, Number(total), pagination))
 })
 
 // Get category detail
@@ -50,7 +59,7 @@ expenseCategoriesRouter.get('/:id', async (c) => {
 // Create category
 expenseCategoriesRouter.post('/', async (c) => {
   const tenant = c.get('tenant')
-  const body = createCategorySchema.parse(await c.req.json())
+  const body = getValidated<typeof createCategorySchema>(c, 'json')!
 
   const [category] = await db.insert(expenseCategories).values({
     ...body,
@@ -61,10 +70,10 @@ expenseCategoriesRouter.post('/', async (c) => {
 })
 
 // Update category
-expenseCategoriesRouter.patch('/:id', async (c) => {
+expenseCategoriesRouter.patch('/:id', validate(createCategorySchema.partial(), 'json'), async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const body = createCategorySchema.partial().parse(await c.req.json())
+  const body = getValidated<typeof createCategorySchema>(c, 'json')!
 
   const [updated] = await db
     .update(expenseCategories)

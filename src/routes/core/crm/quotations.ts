@@ -1,12 +1,14 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, or, ilike } from 'drizzle-orm'
+import { eq, and, or, ilike, count, type SQL } from 'drizzle-orm'
 import { db } from '../../../db'
 import { quotations, quotationItems, invoices, projects } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { requireModuleAccessExcept, hasModulePermission } from '../../../middleware/rbac'
 import { requireApprover, checkApprover } from '../../../lib/approvals'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
+import { parsePagination, paginated } from '../../../lib/pagination'
+import { validate, getValidated } from '../../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -37,11 +39,19 @@ const createQuotationSchema = z.object({
   items: z.array(createItemSchema).min(1),
 })
 
+const updateQuotationSchema = createQuotationSchema.partial()
+
+const approveBodySchema = z.object({
+  approved: z.boolean(),
+  rejectionReason: z.string().max(1000).optional(),
+})
+
 quotationRouter.get('/', async (c) => {
   const tenant = c.get('tenant')
   const { search, status } = c.req.query()
+  const { page, limit, offset } = parsePagination(c)
 
-  let whereClause: any = eq(quotations.tenantId, tenant.tenantId)
+  let whereClause: SQL = eq(quotations.tenantId, tenant.tenantId)
 
   if (search) {
     whereClause = and(
@@ -50,18 +60,23 @@ quotationRouter.get('/', async (c) => {
         ilike(quotations.quotationNumber, `%${search}%`),
         ilike(quotations.title, `%${search}%`)
       )
-    )
+    )!
   }
   if (status) {
-    whereClause = and(whereClause, eq(quotations.status, status))
+    whereClause = and(whereClause, eq(quotations.status, status))!
   }
 
-  const data = await db.query.quotations.findMany({
-    where: whereClause,
-    orderBy: (fields: any, { desc: d }: any) => [d(fields.createdAt)],
-  })
+  const [data, totalRows] = await Promise.all([
+    db.query.quotations.findMany({
+      where: whereClause,
+      orderBy: (fields, { desc: d }) => [d(fields.createdAt)],
+      limit,
+      offset,
+    }),
+    db.select({ total: count() }).from(quotations).where(whereClause),
+  ])
 
-  return c.json({ quotations: data, total: data.length })
+  return c.json(paginated('quotations', data, totalRows[0]?.total ?? 0, { page, limit, offset }))
 })
 
 quotationRouter.get('/stats', async (c) => {
@@ -107,7 +122,7 @@ quotationRouter.get('/:id', async (c) => {
 quotationRouter.post('/', async (c) => {
   const tenant = c.get('tenant')
   const user = c.get('user')
-  const body = createQuotationSchema.parse(await c.req.json())
+  const body = getValidated<typeof createQuotationSchema>(c, 'json')!
 
   const now = new Date()
   const datePart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
@@ -173,7 +188,7 @@ quotationRouter.post('/', async (c) => {
 quotationRouter.patch('/:id', async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const body = createQuotationSchema.partial().parse(await c.req.json())
+  const body = getValidated<typeof updateQuotationSchema>(c, 'json')!
 
   const updateData: Record<string, any> = { updatedAt: new Date() }
   if (body.clientId) updateData.clientId = body.clientId
@@ -232,15 +247,15 @@ quotationRouter.patch('/:id', async (c) => {
 // Status transitions. Leaving pending_approval (→ sent / accepted) requires
 // RACI approval from position level >= 60 (Project Lead / setara).
 // Submit (draft → pending_approval) and other transitions need crm:write.
+const updateQuotationStatusSchema = z.object({
+  status: z.enum(['draft', 'pending_approval', 'sent', 'accepted', 'declined', 'expired', 'converted_to_invoice']),
+  rejectionReason: z.string().optional(),
+})
+
 quotationRouter.post('/:id/status', async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const { status, rejectionReason } = await c.req.json()
-
-  const validStatuses = ['draft', 'pending_approval', 'sent', 'accepted', 'declined', 'expired', 'converted_to_invoice']
-  if (!validStatuses.includes(status)) {
-    return c.json({ error: 'Invalid status' }, 400)
-  }
+  const { status, rejectionReason } = getValidated<typeof updateQuotationStatusSchema>(c, 'json')!
 
   const existing = await db.query.quotations.findFirst({
     where: and(eq(quotations.id, id), eq(quotations.tenantId, tenant.tenantId)),
@@ -309,7 +324,7 @@ quotationRouter.post(
   async (c) => {
     const tenant = c.get('tenant')
     const { id } = c.req.param()
-    const body = z.object({ approved: z.boolean(), rejectionReason: z.string().optional() }).parse(await c.req.json().catch(() => ({ approved: true })))
+    const body = getValidated<typeof approveBodySchema>(c, 'json')!
 
     const existing = await db.query.quotations.findFirst({
       where: and(eq(quotations.id, id), eq(quotations.tenantId, tenant.tenantId)),

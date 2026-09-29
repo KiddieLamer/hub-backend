@@ -1,11 +1,13 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, SQL, ilike } from 'drizzle-orm'
+import { eq, and, SQL, ilike, count } from 'drizzle-orm'
 import { db } from '../../../db'
 import { catalogItems } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
+import { parsePagination, paginated } from '../../../lib/pagination'
+import { validate, getValidated } from '../../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -40,12 +42,20 @@ catalogItemsRouter.get('/', async (c) => {
   if (category) conditions.push(eq(catalogItems.categoryId, category))
   if (status) conditions.push(eq(catalogItems.status, status))
 
-  const data = await db.query.catalogItems.findMany({
-    where: and(...conditions),
-    orderBy: (fields, { asc }) => [asc(fields.name)],
-  })
+  const whereClause = and(...conditions)
+  const pagination = parsePagination(c)
 
-  return c.json({ items: data, total: data.length })
+  const [data, [{ value: total }]] = await Promise.all([
+    db.query.catalogItems.findMany({
+      where: whereClause,
+      orderBy: (fields, { asc }) => [asc(fields.name)],
+      limit: pagination.limit,
+      offset: pagination.offset,
+    }),
+    db.select({ value: count() }).from(catalogItems).where(whereClause),
+  ])
+
+  return c.json(paginated('items', data, Number(total), pagination))
 })
 
 // Get item detail
@@ -65,7 +75,7 @@ catalogItemsRouter.get('/:id', async (c) => {
 // Create item
 catalogItemsRouter.post('/', async (c) => {
   const tenant = c.get('tenant')
-  const body = createItemSchema.parse(await c.req.json())
+  const body = getValidated<typeof createItemSchema>(c, 'json')!
 
   const [item] = await db.insert(catalogItems).values({
     ...body,
@@ -78,10 +88,10 @@ catalogItemsRouter.post('/', async (c) => {
 })
 
 // Update item
-catalogItemsRouter.patch('/:id', async (c) => {
+catalogItemsRouter.patch('/:id', validate(createItemSchema.partial(), 'json'), async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const body = createItemSchema.partial().parse(await c.req.json())
+  const body = getValidated<typeof createItemSchema>(c, 'json')!
 
   const [updated] = await db
     .update(catalogItems)
@@ -99,11 +109,16 @@ catalogItemsRouter.patch('/:id', async (c) => {
   return c.json({ item: updated })
 })
 
+const adjustStockSchema = z.object({
+  quantity: z.number().int().positive(),
+  action: z.enum(['add', 'subtract']),
+})
+
 // Update stock
-catalogItemsRouter.post('/:id/stock', async (c) => {
+catalogItemsRouter.post('/:id/stock', validate(adjustStockSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const { quantity, action } = await c.req.json()
+  const { quantity, action } = getValidated<typeof adjustStockSchema>(c, 'json')!
 
   const item = await db.query.catalogItems.findFirst({
     where: and(eq(catalogItems.id, id), eq(catalogItems.tenantId, tenant.tenantId)),

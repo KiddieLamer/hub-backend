@@ -1,11 +1,13 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, SQL, ilike } from 'drizzle-orm'
+import { eq, and, SQL, ilike, count } from 'drizzle-orm'
+import { parsePagination, paginated } from '../../../lib/pagination'
 import { db } from '../../../db'
 import { invoices, invoiceItems, paymentsReceived } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
+import { validate, getValidated } from '../../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -44,6 +46,7 @@ const recordPaymentSchema = z.object({
 invoicesRouter.get('/', async (c) => {
   const tenant = c.get('tenant')
   const { search, status, clientId } = c.req.query()
+  const { page, limit, offset } = parsePagination(c)
 
   const conditions: SQL[] = [eq(invoices.tenantId, tenant.tenantId)]
 
@@ -51,12 +54,19 @@ invoicesRouter.get('/', async (c) => {
   if (status) conditions.push(eq(invoices.status, status))
   if (clientId) conditions.push(eq(invoices.clientId, clientId))
 
-  const data = await db.query.invoices.findMany({
-    where: and(...conditions),
-    orderBy: (fields, { desc }) => [desc(fields.createdAt)],
-  })
+  const where = and(...conditions)
 
-  return c.json({ invoices: data, total: data.length })
+  const [data, totalRows] = await Promise.all([
+    db.query.invoices.findMany({
+      where,
+      orderBy: (fields, { desc }) => [desc(fields.createdAt)],
+      limit,
+      offset,
+    }),
+    db.select({ total: count() }).from(invoices).where(where),
+  ])
+
+  return c.json(paginated('invoices', data, totalRows[0]?.total ?? 0, { page, limit, offset }))
 })
 
 // Invoice stats
@@ -110,7 +120,7 @@ invoicesRouter.get('/:id', async (c) => {
 invoicesRouter.post('/', async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
-  const body = createInvoiceSchema.parse(await c.req.json())
+  const body = getValidated<typeof createInvoiceSchema>(c, 'json')!
 
   // Calculate totals
   const subtotal = body.items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0)
@@ -147,10 +157,10 @@ invoicesRouter.post('/', async (c) => {
 })
 
 // Update invoice
-invoicesRouter.patch('/:id', async (c) => {
+invoicesRouter.patch('/:id', validate(createInvoiceSchema.partial(), 'json'), async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const body = createInvoiceSchema.partial().parse(await c.req.json())
+  const body = getValidated<typeof createInvoiceSchema>(c, 'json')!
 
   const [updated] = await db
     .update(invoices)
@@ -192,7 +202,7 @@ invoicesRouter.post('/:id/payments', async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const { id } = c.req.param()
-  const body = recordPaymentSchema.parse(await c.req.json())
+  const body = getValidated<typeof recordPaymentSchema>(c, 'json')!
 
   const invoice = await db.query.invoices.findFirst({
     where: and(eq(invoices.id, id), eq(invoices.tenantId, tenant.tenantId)),
@@ -227,10 +237,14 @@ invoicesRouter.post('/:id/payments', async (c) => {
 })
 
 // Update invoice status
-invoicesRouter.post('/:id/status', async (c) => {
+const updateInvoiceStatusSchema = z.object({
+  status: z.enum(['draft', 'sent', 'paid', 'overdue', 'cancelled']),
+})
+
+invoicesRouter.post('/:id/status', validate(updateInvoiceStatusSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const { status } = await c.req.json()
+  const { status } = getValidated<typeof updateInvoiceStatusSchema>(c, 'json')!
 
   const [updated] = await db
     .update(invoices)

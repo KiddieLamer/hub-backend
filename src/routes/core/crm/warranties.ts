@@ -1,11 +1,13 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, SQL, ilike } from 'drizzle-orm'
+import { eq, and, SQL, ilike, count } from 'drizzle-orm'
 import { db } from '../../../db'
 import { warrantiesInsurances, warrantyClaims } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
+import { parsePagination, paginated } from '../../../lib/pagination'
+import { validate, getValidated } from '../../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -28,6 +30,8 @@ const createWarrantySchema = z.object({
   endDate: z.string(),
 })
 
+const updateWarrantySchema = createWarrantySchema.partial()
+
 const createClaimSchema = z.object({
   claimNumber: z.string().min(1).max(100),
   warrantyId: z.string().uuid(),
@@ -42,6 +46,7 @@ const createClaimSchema = z.object({
 warrantiesRouter.get('/', async (c) => {
   const tenant = c.get('tenant')
   const { search, status, type, clientId } = c.req.query()
+  const pagination = parsePagination(c)
 
   const conditions: SQL[] = [eq(warrantiesInsurances.tenantId, tenant.tenantId)]
 
@@ -50,12 +55,19 @@ warrantiesRouter.get('/', async (c) => {
   if (type) conditions.push(eq(warrantiesInsurances.type, type))
   if (clientId) conditions.push(eq(warrantiesInsurances.clientId, clientId))
 
-  const data = await db.query.warrantiesInsurances.findMany({
-    where: and(...conditions),
-    orderBy: (fields, { desc }) => [desc(fields.createdAt)],
-  })
+  const where = and(...conditions)
 
-  return c.json({ warranties: data, total: data.length })
+  const [data, [{ value: total }]] = await Promise.all([
+    db.query.warrantiesInsurances.findMany({
+      where,
+      orderBy: (fields, { desc }) => [desc(fields.createdAt)],
+      limit: pagination.limit,
+      offset: pagination.offset,
+    }),
+    db.select({ value: count() }).from(warrantiesInsurances).where(where),
+  ])
+
+  return c.json(paginated('warranties', data, Number(total), pagination))
 })
 
 // Get warranty detail
@@ -80,7 +92,7 @@ warrantiesRouter.get('/:id', async (c) => {
 // Create warranty
 warrantiesRouter.post('/', async (c) => {
   const tenant = c.get('tenant')
-  const body = createWarrantySchema.parse(await c.req.json())
+  const body = getValidated<typeof createWarrantySchema>(c, 'json')!
 
   const [warranty] = await db.insert(warrantiesInsurances).values({
     ...body,
@@ -94,7 +106,7 @@ warrantiesRouter.post('/', async (c) => {
 warrantiesRouter.patch('/:id', async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const body = createWarrantySchema.partial().parse(await c.req.json())
+  const body = getValidated<typeof updateWarrantySchema>(c, 'json')!
 
   const [updated] = await db
     .update(warrantiesInsurances)
@@ -108,10 +120,14 @@ warrantiesRouter.patch('/:id', async (c) => {
 })
 
 // Update warranty status
+const updateWarrantyStatusSchema = z.object({
+  status: z.enum(['active', 'claimed', 'expired', 'cancelled']),
+})
+
 warrantiesRouter.post('/:id/status', async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const { status } = await c.req.json()
+  const { status } = getValidated<typeof updateWarrantyStatusSchema>(c, 'json')!
 
   const [updated] = await db
     .update(warrantiesInsurances)
@@ -176,7 +192,7 @@ warrantiesRouter.get('/claims/:id', async (c) => {
 // Create claim
 warrantiesRouter.post('/claims', async (c) => {
   const tenant = c.get('tenant')
-  const body = createClaimSchema.parse(await c.req.json())
+  const body = getValidated<typeof createClaimSchema>(c, 'json')!
 
   const [claim] = await db.insert(warrantyClaims).values({
     ...body,
@@ -194,10 +210,15 @@ warrantiesRouter.post('/claims', async (c) => {
 })
 
 // Update claim status
+const updateClaimStatusSchema = z.object({
+  status: z.enum(['submitted', 'under_review', 'approved', 'rejected', 'resolved']),
+  resolutionNotes: z.string().optional(),
+})
+
 warrantiesRouter.post('/claims/:id/status', async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const { status, resolutionNotes } = await c.req.json()
+  const { status, resolutionNotes } = getValidated<typeof updateClaimStatusSchema>(c, 'json')!
 
   const [updated] = await db
     .update(warrantyClaims)

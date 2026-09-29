@@ -1,11 +1,13 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, or, ilike } from 'drizzle-orm'
+import { eq, and, or, ilike, count, type SQL } from 'drizzle-orm'
 import { db } from '../../../db'
 import { clients } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
+import { parsePagination, paginated } from '../../../lib/pagination'
+import { validate, getValidated } from '../../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -33,40 +35,43 @@ const createClientSchema = z.object({
   billingEmail: z.string().email().optional(),
 })
 
+const updateClientSchema = createClientSchema.partial()
+
+const updateClientStatusSchema = z.object({
+  status: z.enum(['lead', 'prospect', 'active', 'churned', 'inactive']),
+})
+
 clientsRouter.get('/', async (c) => {
   const tenant = c.get('tenant')
   const { search, status } = c.req.query()
+  const { page, limit, offset } = parsePagination(c)
 
-  let data
+  const conditions: SQL[] = [eq(clients.tenantId, tenant.tenantId)]
 
   if (search) {
-    data = await db.query.clients.findMany({
-      where: and(
-        eq(clients.tenantId, tenant.tenantId),
-        or(
-          ilike(clients.name, `%${search}%`),
-          ilike(clients.picName, `%${search}%`),
-          ilike(clients.picEmail, `%${search}%`)
-        )
-      ),
-      orderBy: (clients, { desc }) => [desc(clients.createdAt)],
-    })
-  } else if (status) {
-    data = await db.query.clients.findMany({
-      where: and(
-        eq(clients.tenantId, tenant.tenantId),
-        eq(clients.status, status)
-      ),
-      orderBy: (clients, { desc }) => [desc(clients.createdAt)],
-    })
-  } else {
-    data = await db.query.clients.findMany({
-      where: eq(clients.tenantId, tenant.tenantId),
-      orderBy: (clients, { desc }) => [desc(clients.createdAt)],
-    })
+    conditions.push(
+      or(
+        ilike(clients.name, `%${search}%`),
+        ilike(clients.picName, `%${search}%`),
+        ilike(clients.picEmail, `%${search}%`)
+      )!
+    )
   }
+  if (status) conditions.push(eq(clients.status, status))
 
-  return c.json({ clients: data, total: data.length })
+  const where = and(...conditions)
+
+  const [data, totalRows] = await Promise.all([
+    db.query.clients.findMany({
+      where,
+      orderBy: (fields, { desc }) => [desc(fields.createdAt)],
+      limit,
+      offset,
+    }),
+    db.select({ total: count() }).from(clients).where(where),
+  ])
+
+  return c.json(paginated('clients', data, totalRows[0]?.total ?? 0, { page, limit, offset }))
 })
 
 clientsRouter.get('/stats', async (c) => {
@@ -103,9 +108,9 @@ clientsRouter.get('/:id', async (c) => {
   return c.json({ client })
 })
 
-clientsRouter.post('/', async (c) => {
+clientsRouter.post('/', validate(createClientSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
-  const body = createClientSchema.parse(await c.req.json())
+  const body = getValidated<typeof createClientSchema>(c, 'json')!
 
   const [client] = await db.insert(clients).values({
     ...body,
@@ -115,10 +120,10 @@ clientsRouter.post('/', async (c) => {
   return c.json({ client }, 201)
 })
 
-clientsRouter.patch('/:id', async (c) => {
+clientsRouter.patch('/:id', validate(updateClientSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const body = createClientSchema.partial().parse(await c.req.json())
+  const body = getValidated<typeof updateClientSchema>(c, 'json')!
 
   const [updated] = await db
     .update(clients)
@@ -133,15 +138,10 @@ clientsRouter.patch('/:id', async (c) => {
   return c.json({ client: updated })
 })
 
-clientsRouter.patch('/:id/status', async (c) => {
+clientsRouter.patch('/:id/status', validate(updateClientStatusSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const { status } = await c.req.json()
-
-  const validStatuses = ['lead', 'prospect', 'active', 'churned', 'inactive']
-  if (!validStatuses.includes(status)) {
-    return c.json({ error: 'Invalid status' }, 400)
-  }
+  const { status } = getValidated<typeof updateClientStatusSchema>(c, 'json')!
 
   const [updated] = await db
     .update(clients)

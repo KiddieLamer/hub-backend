@@ -11,8 +11,10 @@ export const tenants = pgTable('tenants', {
   phoneNumber: varchar('phone_number', { length: 20 }),
   email: varchar('email', { length: 255 }),
 
-  // 2. Isolasi Database (Multi-Tenant)
-  dbSchema: varchar('db_schema', { length: 100 }).notNull().unique(),
+  // 2. Isolasi Multi-Tenant
+  // Model: shared-schema + kolom tenant_id di tiap tabel tenant-scoped.
+  // TIDAK pakai schema-per-tenant (backup/restore per-tenant tidak scalable).
+  // Keamanan isolasi di-enforce di query layer (filter tenant_id) + middleware.
 
   // Industry category for role/position templates (Fase 2).
   // jasa-lapangan | hotel | konsultan | umum

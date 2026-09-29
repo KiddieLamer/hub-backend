@@ -5,6 +5,9 @@ import { db } from '../../db'
 import { users, tenantMembers, refreshTokens, tenants } from '../../db/schema'
 import { authMiddleware, type Variables } from '../../middleware/auth'
 import { hashPassword } from '../../lib/password'
+import { parsePagination, paginated } from '../../lib/pagination'
+import { recordAudit } from '../../lib/audit'
+import { validate, getValidated } from '../../middleware/validate'
 
 const usersRouter = new Hono<{ Variables: Variables }>()
 usersRouter.use('*', authMiddleware)
@@ -17,12 +20,28 @@ const updateProfileSchema = z.object({
   jobTitle: z.string().max(100).optional(),
   department: z.string().max(100).optional(),
   employeeId: z.string().max(50).optional(),
+  dateOfBirth: z.string().optional(),
+  ktpNumber: z.string().max(30).optional(),
+  address: z.string().optional(),
 })
 
 const changePasswordSchema = z.object({
   currentPassword: z.string(),
   newPassword: z.string().min(6).max(100),
 })
+
+// updateProfileSchema carries dateOfBirth as an ISO string; convert to Date
+// before writing (timestamp column). Returns 400 message on invalid input.
+function splitProfileDates(body: z.infer<typeof updateProfileSchema>): {
+  rest: Record<string, unknown>
+  dateOfBirth?: Date
+} | { error: string } {
+  const { dateOfBirth: dobRaw, ...rest } = body
+  if (dobRaw === undefined || dobRaw === '') return { rest }
+  const parsed = new Date(dobRaw)
+  if (Number.isNaN(parsed.getTime())) return { error: 'Invalid dateOfBirth' }
+  return { rest, dateOfBirth: parsed }
+}
 
 const createUserSchema = z.object({
   fullName: z.string().min(2).max(255),
@@ -83,8 +102,8 @@ usersRouter.get('/', async (c) => {
     }
   }
 
-  const rawLimit = Number.parseInt(String(c.req.query('limit') ?? ''), 10)
-  const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 100) : 50
+  const pagination = parsePagination(c)
+  const { page, limit } = pagination
 
   const listColumns = {
     id: true, email: true, fullName: true, phoneNumber: true, avatarUrl: true,
@@ -120,7 +139,7 @@ usersRouter.get('/', async (c) => {
       .where(inArray(tenantMembers.tenantId, adminTenantIds))
     const memberUserIds = [...new Set(memberRows.map((r) => r.userId))]
     if (memberUserIds.length === 0) {
-      return c.json({ users: [], total: 0 })
+      return c.json(paginated('users', [], 0, pagination))
     }
     conditions.push(inArray(users.id, memberUserIds))
   }
@@ -133,11 +152,12 @@ usersRouter.get('/', async (c) => {
       columns: listColumns,
       orderBy: (users, { desc }) => [desc(users.createdAt)],
       limit,
+      offset: (page - 1) * limit,
     }),
     db.select({ total: count() }).from(users).where(where),
   ])
 
-  return c.json({ users: data, total: totalRows[0]?.total ?? 0 })
+  return c.json({ users: data, total: totalRows[0]?.total ?? 0, page, limit })
 })
 
 usersRouter.get('/me', async (c) => {
@@ -174,11 +194,18 @@ usersRouter.get('/me', async (c) => {
 
 usersRouter.patch('/me', async (c) => {
   const authUser = c.get('user')
-  const body = updateProfileSchema.parse(await c.req.json())
+  const body = getValidated<typeof updateProfileSchema>(c, 'json')!
+
+  const split = splitProfileDates(body)
+  if ('error' in split) return c.json({ error: split.error }, 400)
 
   const [updated] = await db
     .update(users)
-    .set({ ...body, updatedAt: new Date() })
+    .set({
+      ...split.rest,
+      ...(split.dateOfBirth !== undefined ? { dateOfBirth: split.dateOfBirth } : {}),
+      updatedAt: new Date(),
+    })
     .where(eq(users.id, authUser.id))
     .returning({
       id: users.id,
@@ -196,7 +223,7 @@ usersRouter.patch('/me', async (c) => {
 
 usersRouter.post('/me/change-password', async (c) => {
   const authUser = c.get('user')
-  const body = changePasswordSchema.parse(await c.req.json())
+  const body = getValidated<typeof changePasswordSchema>(c, 'json')!
 
   const user = await db.query.users.findFirst({
     where: eq(users.id, authUser.id),
@@ -223,14 +250,14 @@ usersRouter.post('/me/change-password', async (c) => {
   return c.json({ message: 'Password updated' })
 })
 
+const resetPasswordSchema = z.object({
+  newPassword: z.string().min(6).max(100),
+})
+
 usersRouter.post('/:id/reset-password', async (c) => {
   const authUser = c.get('user')
   const { id } = c.req.param()
-  const body = await c.req.json()
-
-  if (!body.newPassword || body.newPassword.length < 6) {
-    return c.json({ error: 'Password must be at least 6 characters' }, 400)
-  }
+  const body = getValidated<typeof resetPasswordSchema>(c, 'json')!
 
   if (id === authUser.id) {
     return c.json({ error: 'Use change-password to update your own password' }, 403)
@@ -259,6 +286,25 @@ usersRouter.post('/:id/reset-password', async (c) => {
     .set({ revokedAt: new Date() })
     .where(eq(refreshTokens.userId, id))
 
+  // Resolve the target's tenant to scope the audit entry. Fall back to the
+  // caller's active tenant when the target has no membership row.
+  const targetMembership = await db.query.tenantMembers.findFirst({
+    where: eq(tenantMembers.userId, id),
+    columns: { tenantId: true },
+  })
+  const callerRow = await db.query.users.findFirst({
+    where: eq(users.id, authUser.id),
+    columns: { currentTenantId: true },
+  })
+  const auditTenantId = targetMembership?.tenantId ?? callerRow?.currentTenantId ?? null
+  if (auditTenantId) {
+    await recordAudit(c, auditTenantId, {
+      action: 'user.password.reset',
+      module: 'umas',
+      recordId: id,
+    })
+  }
+
   return c.json({ message: 'Password reset successfully' })
 })
 
@@ -276,7 +322,7 @@ usersRouter.delete('/me', async (c) => {
 
 usersRouter.post('/', async (c) => {
   const authUser = c.get('user')
-  const body = createUserSchema.parse(await c.req.json())
+  const body = getValidated<typeof createUserSchema>(c, 'json')!
 
   const isHubAdmin = authUser.platformRole === 'hub-admin'
   let adminTenantIds = new Set<string>()
@@ -432,7 +478,7 @@ usersRouter.patch('/:id', async (c) => {
     return c.json({ error: 'Insufficient permissions' }, 403)
   }
 
-  const body = updateProfileSchema.parse(await c.req.json())
+  const body = getValidated<typeof updateProfileSchema>(c, 'json')!
 
   if (body.email) {
     const taken = await db.query.users.findFirst({
@@ -443,9 +489,16 @@ usersRouter.patch('/:id', async (c) => {
     }
   }
 
+  const split = splitProfileDates(body)
+  if ('error' in split) return c.json({ error: split.error }, 400)
+
   const [updated] = await db
     .update(users)
-    .set({ ...body, updatedAt: new Date() })
+    .set({
+      ...split.rest,
+      ...(split.dateOfBirth !== undefined ? { dateOfBirth: split.dateOfBirth } : {}),
+      updatedAt: new Date(),
+    })
     .where(and(eq(users.id, id), isNull(users.deletedAt)))
     .returning({
       id: users.id,
@@ -459,6 +512,23 @@ usersRouter.patch('/:id', async (c) => {
 
   if (!updated) {
     return c.json({ error: 'User not found' }, 404)
+  }
+
+  // Audit sensitive profile mutations (role/status changes). Resolve the
+  // active tenant from the caller's record; hub-level edits without a
+  // tenant context are skipped (nothing to scope the entry to).
+  const caller = await db.query.users.findFirst({
+    where: eq(users.id, authUser.id),
+    columns: { currentTenantId: true },
+  })
+  const auditTenantId = caller?.currentTenantId ?? null
+  if (auditTenantId && (updated.role || updated.status)) {
+    await recordAudit(c, auditTenantId, {
+      action: 'user.profile.update',
+      module: 'umas',
+      recordId: id,
+      newValues: { role: updated.role, status: updated.status },
+    })
   }
 
   return c.json({ user: updated })
@@ -490,6 +560,25 @@ usersRouter.delete('/:id', async (c) => {
     .update(refreshTokens)
     .set({ revokedAt: new Date() })
     .where(eq(refreshTokens.userId, id))
+
+  // Audit: scope to the deleted user's tenant membership when available,
+  // otherwise fall back to the caller's current tenant.
+  const targetMembership = await db.query.tenantMembers.findFirst({
+    where: eq(tenantMembers.userId, id),
+    columns: { tenantId: true },
+  })
+  const callerRow = await db.query.users.findFirst({
+    where: eq(users.id, authUser.id),
+    columns: { currentTenantId: true },
+  })
+  const auditTenantId = targetMembership?.tenantId ?? callerRow?.currentTenantId ?? null
+  if (auditTenantId) {
+    await recordAudit(c, auditTenantId, {
+      action: 'user.delete',
+      module: 'umas',
+      recordId: id,
+    })
+  }
 
   return c.json({ message: 'User deleted' })
 })

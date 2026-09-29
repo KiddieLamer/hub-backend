@@ -7,6 +7,7 @@ import { authMiddleware, type Variables as AuthVariables } from '../../../middle
 import { requireModuleAccessExcept } from '../../../middleware/rbac'
 import { requireApprover } from '../../../lib/approvals'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
+import { validate, getValidated } from '../../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -42,7 +43,7 @@ leavesRouter.get('/types', async (c) => {
 
 leavesRouter.post('/types', async (c) => {
   const tenant = c.get('tenant')
-  const body = leaveTypeSchema.parse(await c.req.json())
+  const body = getValidated<typeof leaveTypeSchema>(c, 'json')!
 
   const [leaveType] = await db.insert(leaveTypes).values({
     ...body,
@@ -52,10 +53,10 @@ leavesRouter.post('/types', async (c) => {
   return c.json({ leaveType }, 201)
 })
 
-leavesRouter.patch('/types/:id', async (c) => {
+leavesRouter.patch('/types/:id', validate(leaveTypeSchema.partial(), 'json'), async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const body = leaveTypeSchema.partial().parse(await c.req.json())
+  const body = getValidated<typeof leaveTypeSchema>(c, 'json')!
 
   const [updated] = await db
     .update(leaveTypes)
@@ -100,7 +101,7 @@ leavesRouter.get('/requests', async (c) => {
 leavesRouter.post('/requests', async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
-  const body = leaveRequestSchema.parse(await c.req.json())
+  const body = getValidated<typeof leaveRequestSchema>(c, 'json')!
 
   const [request] = await db.insert(leaveRequests).values({
     ...body,

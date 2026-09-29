@@ -1,12 +1,14 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, SQL, ilike } from 'drizzle-orm'
+import { eq, and, SQL, ilike, count } from 'drizzle-orm'
 import { db } from '../../../db'
 import { pos, poItems, stockMovements, catalogItems } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { requireModuleAccessExcept, hasModulePermission } from '../../../middleware/rbac'
 import { checkApprover } from '../../../lib/approvals'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
+import { parsePagination, paginated } from '../../../lib/pagination'
+import { validate, getValidated } from '../../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -44,6 +46,7 @@ const receiveItemsSchema = z.object({
 posRouter.get('/', async (c) => {
   const tenant = c.get('tenant')
   const { search, status, supplierId } = c.req.query()
+  const pagination = parsePagination(c)
 
   const conditions: SQL[] = [eq(pos.tenantId, tenant.tenantId)]
 
@@ -51,12 +54,19 @@ posRouter.get('/', async (c) => {
   if (status) conditions.push(eq(pos.status, status))
   if (supplierId) conditions.push(eq(pos.supplierId, supplierId))
 
-  const data = await db.query.pos.findMany({
-    where: and(...conditions),
-    orderBy: (fields, { desc }) => [desc(fields.createdAt)],
-  })
+  const where = and(...conditions)
 
-  return c.json({ purchaseOrders: data, total: data.length })
+  const [data, [{ value: total }]] = await Promise.all([
+    db.query.pos.findMany({
+      where,
+      orderBy: (fields, { desc }) => [desc(fields.createdAt)],
+      limit: pagination.limit,
+      offset: pagination.offset,
+    }),
+    db.select({ value: count() }).from(pos).where(where),
+  ])
+
+  return c.json(paginated('purchaseOrders', data, Number(total), pagination))
 })
 
 // PO stats
@@ -105,7 +115,7 @@ posRouter.get('/:id', async (c) => {
 posRouter.post('/', async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
-  const body = createPoSchema.parse(await c.req.json())
+  const body = getValidated<typeof createPoSchema>(c, 'json')!
 
   // Calculate total
   const totalAmount = body.items.reduce((sum, item) => sum + item.quantityOrdered * item.unitCost, 0)
@@ -138,8 +148,7 @@ posRouter.post('/:id/status', async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const { id } = c.req.param()
-  const body = await c.req.json()
-  const { status } = poStatusSchema.parse(body)
+  const { status } = getValidated<typeof poStatusSchema>(c, 'json')!
 
   const po = await db.query.pos.findFirst({
     where: and(eq(pos.id, id), eq(pos.tenantId, tenant.tenantId)),
@@ -189,7 +198,7 @@ posRouter.post('/:id/receive', async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const { id } = c.req.param()
-  const body = receiveItemsSchema.parse(await c.req.json())
+  const body = getValidated<typeof receiveItemsSchema>(c, 'json')!
 
   const po = await db.query.pos.findFirst({
     where: and(eq(pos.id, id), eq(pos.tenantId, tenant.tenantId)),

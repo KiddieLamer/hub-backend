@@ -1,12 +1,14 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, SQL, ilike } from 'drizzle-orm'
+import { eq, and, SQL, ilike, count } from 'drizzle-orm'
 import { db } from '../../../db'
 import { expenseClaims, departmentBudgets } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { requireModuleAccessExcept } from '../../../middleware/rbac'
 import { requireApprover } from '../../../lib/approvals'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
+import { parsePagination, paginated } from '../../../lib/pagination'
+import { validate, getValidated } from '../../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -43,6 +45,7 @@ expenseClaimsRouter.get('/', async (c) => {
   const tenant = c.get('tenant')
   const { search, status, category, department } = c.req.query()
 
+  const pagination = parsePagination(c)
   const conditions: SQL[] = [eq(expenseClaims.tenantId, tenant.tenantId)]
 
   if (search) conditions.push(ilike(expenseClaims.title, `%${search}%`))
@@ -50,12 +53,19 @@ expenseClaimsRouter.get('/', async (c) => {
   if (category) conditions.push(eq(expenseClaims.categoryId, category))
   if (department) conditions.push(eq(expenseClaims.department, department))
 
-  const data = await db.query.expenseClaims.findMany({
-    where: and(...conditions),
-    orderBy: (fields, { desc }) => [desc(fields.createdAt)],
-  })
+  const where = and(...conditions)
 
-  return c.json({ claims: data, total: data.length })
+  const [data, [{ value: total }]] = await Promise.all([
+    db.query.expenseClaims.findMany({
+      where,
+      orderBy: (fields, { desc }) => [desc(fields.createdAt)],
+      limit: pagination.limit,
+      offset: pagination.offset,
+    }),
+    db.select({ value: count() }).from(expenseClaims).where(where),
+  ])
+
+  return c.json(paginated('claims', data, Number(total), pagination))
 })
 
 // Stats
@@ -98,7 +108,7 @@ expenseClaimsRouter.get('/:id', async (c) => {
 expenseClaimsRouter.post('/', async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
-  const body = createClaimSchema.parse(await c.req.json())
+  const body = getValidated<typeof createClaimSchema>(c, 'json')!
 
   const [claim] = await db.insert(expenseClaims).values({
     ...body,
@@ -111,10 +121,10 @@ expenseClaimsRouter.post('/', async (c) => {
 })
 
 // Update claim
-expenseClaimsRouter.patch('/:id', async (c) => {
+expenseClaimsRouter.patch('/:id', validate(createClaimSchema.partial(), 'json'), async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
-  const body = createClaimSchema.partial().parse(await c.req.json())
+  const body = getValidated<typeof createClaimSchema>(c, 'json')!
 
   const [updated] = await db
     .update(expenseClaims)
@@ -177,7 +187,7 @@ expenseClaimsRouter.post(
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const { id } = c.req.param()
-  const body = approveSchema.parse(await c.req.json())
+  const body = getValidated<typeof approveSchema>(c, 'json')!
 
   const claim = await db.query.expenseClaims.findFirst({
     where: and(eq(expenseClaims.id, id), eq(expenseClaims.tenantId, tenant.tenantId)),
@@ -233,7 +243,7 @@ expenseClaimsRouter.post('/:id/pay', async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const { id } = c.req.param()
-  const body = paySchema.parse(await c.req.json())
+  const body = getValidated<typeof paySchema>(c, 'json')!
 
   const claim = await db.query.expenseClaims.findFirst({
     where: and(eq(expenseClaims.id, id), eq(expenseClaims.tenantId, tenant.tenantId)),

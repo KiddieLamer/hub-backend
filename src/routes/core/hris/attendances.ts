@@ -1,11 +1,13 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, gte, lte, SQL } from 'drizzle-orm'
+import { eq, and, gte, lte, SQL, count } from 'drizzle-orm'
 import { db } from '../../../db'
 import { attendances } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
+import { parsePagination, paginated } from '../../../lib/pagination'
+import { validate, getValidated } from '../../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -38,19 +40,25 @@ attendancesRouter.get('/', async (c) => {
   if (endDate) conditions.push(lte(attendances.attendanceDate, endDate))
 
   const whereClause = and(...conditions)
+  const pagination = parsePagination(c)
 
-  const data = await db.query.attendances.findMany({
-    where: whereClause,
-    orderBy: (fields, { desc }) => [desc(fields.attendanceDate)],
-  })
+  const [data, [{ value: total }]] = await Promise.all([
+    db.query.attendances.findMany({
+      where: whereClause,
+      orderBy: (fields, { desc }) => [desc(fields.attendanceDate)],
+      limit: pagination.limit,
+      offset: pagination.offset,
+    }),
+    db.select({ value: count() }).from(attendances).where(whereClause),
+  ])
 
-  return c.json({ attendances: data })
+  return c.json(paginated('attendances', data, Number(total), pagination))
 })
 
-attendancesRouter.post('/check-in', async (c) => {
+attendancesRouter.post('/check-in', validate(checkInSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
-  const { latitude, longitude, photoUrl } = checkInSchema.parse(await c.req.json())
+  const { latitude, longitude, photoUrl } = getValidated<typeof checkInSchema>(c, 'json')!
 
   const today = new Date().toISOString().split('T')[0]
 
@@ -78,10 +86,10 @@ attendancesRouter.post('/check-in', async (c) => {
   return c.json({ attendance }, 201)
 })
 
-attendancesRouter.post('/check-out', async (c) => {
+attendancesRouter.post('/check-out', validate(checkOutSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
-  const { latitude, longitude, photoUrl } = checkOutSchema.parse(await c.req.json())
+  const { latitude, longitude, photoUrl } = getValidated<typeof checkOutSchema>(c, 'json')!
 
   const today = new Date().toISOString().split('T')[0]
 

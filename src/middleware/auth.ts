@@ -3,12 +3,15 @@ import { jwtVerify } from 'jose'
 import { env } from '../config/env'
 import { db } from '../db'
 import { users, userRoles, roles, rolePermissions, permissions } from '../db/schema'
-import { eq, inArray } from 'drizzle-orm'
+import { eq, and } from 'drizzle-orm'
 
 export interface AuthUser {
   id: string
   email: string
   fullName: string | null
+  // Tenant-scoped roles/permissions are filled in by tenantMiddleware
+  // (per X-Tenant-ID). Left empty here so we never leak roles/permissions
+  // across tenants at the identity layer.
   roles: string[]
   permissions: string[]
   platformRole: string | null
@@ -41,29 +44,24 @@ export async function authMiddleware(c: Context<{ Variables: Variables }>, next:
       return c.json({ error: 'User not found' }, 401)
     }
 
-    const userRolesData = await db
-      .select({ roleName: roles.name })
-      .from(userRoles)
-      .innerJoin(roles, eq(userRoles.roleId, roles.id))
-      .where(eq(userRoles.userId, userId))
+    if (user.deletedAt) {
+      return c.json({ error: 'Account deleted' }, 401)
+    }
 
-    const roleNames = userRolesData.map((r) => r.roleName)
+    if (user.status === 'suspended') {
+      return c.json({ error: 'Account suspended' }, 403)
+    }
 
-    const permissionsData = await db
-      .select({ permissionName: permissions.name })
-      .from(rolePermissions)
-      .innerJoin(roles, eq(rolePermissions.roleId, roles.id))
-      .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
-      .where(inArray(roles.name, roleNames))
-
-    const permissionNames = [...new Set(permissionsData.map((p) => p.permissionName))]
-
+    // Identity only. Roles/permissions are intentionally empty here:
+    // they must be resolved per-tenant by tenantMiddleware, which scopes
+    // user_roles by X-Tenant-ID. Loading them globally (as this used to)
+    // leaked permissions between tenants that shared a role name.
     c.set('user', {
       id: user.id,
       email: user.email,
       fullName: user.fullName,
-      roles: roleNames,
-      permissions: permissionNames,
+      roles: [],
+      permissions: [],
       platformRole: user.platformRole,
     } satisfies AuthUser)
 
