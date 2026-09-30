@@ -8,7 +8,7 @@ import { requireModuleAccessExcept, hasModulePermission } from '../../../middlew
 import { checkApprover } from '../../../lib/approvals'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 import { parsePagination, paginated } from '../../../lib/pagination'
-import { validate, getValidated } from '../../../middleware/validate'
+import { getValidated } from '../../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -206,24 +206,33 @@ posRouter.post('/:id/receive', async (c) => {
 
   if (!po) return c.json({ error: 'PO not found' }, 404)
 
-  // Update each item's quantity received
+  // Update each item's quantity received.
+  // SECURITY: poItems has no tenantId of its own, so the ONLY safe scope is
+  // via its parent PO. We require poItem.poId === :id (the tenant-verified PO)
+  // so a body-supplied poItemId from another tenant can never be mutated.
   for (const item of body.items) {
     const poItem = await db.query.poItems.findFirst({
-      where: eq(poItems.id, item.poItemId),
+      where: and(eq(poItems.id, item.poItemId), eq(poItems.poId, id)),
     })
 
-    if (!poItem) continue
+    if (!poItem) {
+      return c.json({ error: 'PO item not found on this purchase order' }, 404)
+    }
 
     const newQuantityReceived = poItem.quantityReceived + item.quantityReceived
 
     await db
       .update(poItems)
       .set({ quantityReceived: newQuantityReceived })
-      .where(eq(poItems.id, item.poItemId))
+      .where(and(eq(poItems.id, item.poItemId), eq(poItems.poId, id)))
 
-    // Create stock movement
+    // Create stock movement. Scope the catalog item to this tenant so we
+    // never read/overwrite another tenant's stock.
     const catalogItem = await db.query.catalogItems.findFirst({
-      where: eq(catalogItems.id, poItem.catalogItemId),
+      where: and(
+        eq(catalogItems.id, poItem.catalogItemId),
+        eq(catalogItems.tenantId, tenant.tenantId),
+      ),
     })
 
     if (catalogItem) {
@@ -241,11 +250,14 @@ posRouter.post('/:id/receive', async (c) => {
         notes: `PO ${po.poNumber} received`,
       })
 
-      // Update catalog item stock
+      // Update catalog item stock (tenant-scoped).
       await db
         .update(catalogItems)
         .set({ stockQuantity: stockAfter, updatedAt: new Date() })
-        .where(eq(catalogItems.id, poItem.catalogItemId))
+        .where(and(
+          eq(catalogItems.id, poItem.catalogItemId),
+          eq(catalogItems.tenantId, tenant.tenantId),
+        ))
     }
   }
 

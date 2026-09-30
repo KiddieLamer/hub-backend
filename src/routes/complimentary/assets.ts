@@ -207,7 +207,7 @@ assetsRouter.post('/:id/handover', validate(idParamSchema, 'param'), validate(ha
       assignedAt: new Date(),
       updatedAt: new Date(),
     })
-    .where(eq(assets.id, id))
+    .where(and(eq(assets.id, id), eq(assets.tenantId, tenant.tenantId)))
     .returning()
 
   return c.json({ asset: updated })
@@ -244,7 +244,7 @@ assetsRouter.post('/:id/return', validate(idParamSchema, 'param'), async (c) => 
       assignedAt: null,
       updatedAt: new Date(),
     })
-    .where(eq(assets.id, id))
+    .where(and(eq(assets.id, id), eq(assets.tenantId, tenant.tenantId)))
     .returning()
 
   return c.json({ asset: updated })

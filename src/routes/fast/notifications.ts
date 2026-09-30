@@ -1,14 +1,20 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { and, desc, eq, isNull } from 'drizzle-orm'
-import { authMiddleware, type Variables } from '../../middleware/auth'
+import { authMiddleware, type Variables as AuthVariables } from '../../middleware/auth'
+import { tenantMiddleware, type TenantVariables } from '../../middleware/tenant'
 import { db } from '../../db'
-import { notifications as notificationsTable, users } from '../../db/schema'
+import { notifications as notificationsTable, users, tenantMembers } from '../../db/schema'
 import { parsePagination, paginated } from '../../lib/pagination'
-import { validate, getValidated } from '../../middleware/validate'
+import { getValidated } from '../../middleware/validate'
+
+type Variables = AuthVariables & TenantVariables
 
 const notifications = new Hono<{ Variables: Variables }>()
 notifications.use('*', authMiddleware)
+// SECURITY: /push must know the caller's tenant so it can refuse to fan out
+// notifications to users outside it. Other routes stay self-scoped by userId.
+notifications.use('/push', tenantMiddleware)
 
 const emailSchema = z.object({
   to: z.string().email(),
@@ -122,7 +128,23 @@ notifications.post('/whatsapp', async (c) => {
 })
 
 notifications.post('/push', async (c) => {
+  const tenant = c.get('tenant')
   const body = getValidated<typeof pushSchema>(c, 'json')!
+
+  // SECURITY: the target must be an active member of the caller's tenant.
+  // Previously userId + tenantId came straight from the body, letting any
+  // authenticated user send notifications into another tenant (spoofing +
+  // cross-tenant spam). tenantId is now taken from the verified context.
+  const membership = await db.query.tenantMembers.findFirst({
+    where: and(
+      eq(tenantMembers.userId, body.userId),
+      eq(tenantMembers.tenantId, tenant.tenantId),
+    ),
+    columns: { userId: true },
+  })
+  if (!membership) {
+    return c.json({ error: 'User is not a member of this tenant' }, 404)
+  }
 
   const target = await db.query.users.findFirst({
     where: and(eq(users.id, body.userId), isNull(users.deletedAt)),
@@ -137,7 +159,7 @@ notifications.post('/push', async (c) => {
     title: body.title,
     message: body.body,
     type: body.type ?? 'push',
-    tenantId: body.tenantId ?? null,
+    tenantId: tenant.tenantId,
   })
 
   console.log(`[Notification] Push to user: ${body.userId}`)

@@ -7,7 +7,7 @@ import { authMiddleware, type Variables as AuthVariables } from '../../../middle
 import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 import { parsePagination, paginated } from '../../../lib/pagination'
-import { validate, getValidated } from '../../../middleware/validate'
+import { getValidated } from '../../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -284,7 +284,15 @@ tasksRouter.delete('/:id/comments/:commentId', async (c) => {
 
   if (!task) return c.json({ error: 'Task not found' }, 404)
 
-  await db.delete(taskComments).where(eq(taskComments.id, commentId))
+  // SECURITY: scope the delete to the task as well as the comment id, so a
+  // comment belonging to a task in another tenant can't be deleted by guessing
+  // its UUID (IDOR on child table via path param).
+  const [deleted] = await db
+    .delete(taskComments)
+    .where(and(eq(taskComments.id, commentId), eq(taskComments.taskId, id)))
+    .returning({ id: taskComments.id })
+
+  if (!deleted) return c.json({ error: 'Comment not found' }, 404)
 
   return c.json({ message: 'Comment deleted' })
 })

@@ -207,7 +207,7 @@ expenseClaimsRouter.post(
       rejectionReason: body.approved ? null : body.rejectionReason,
       updatedAt: new Date(),
     })
-    .where(eq(expenseClaims.id, id))
+    .where(and(eq(expenseClaims.id, id), eq(expenseClaims.tenantId, tenant.tenantId)))
     .returning()
 
   // Update used budget if approved

@@ -7,7 +7,7 @@ import { authMiddleware, type Variables as AuthVariables } from '../../../middle
 import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 import { parsePagination, paginated } from '../../../lib/pagination'
-import { validate, getValidated } from '../../../middleware/validate'
+import { getValidated } from '../../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -89,10 +89,12 @@ tagsRouter.patch('/:id', async (c) => {
 
   if (!tag) return c.json({ error: 'Tag not found' }, 404)
 
+  // SECURITY: scope by tenant (via project subquery) on top of the pre-check,
+  // so an id from another tenant can never be mutated (defense-in-depth).
   const [updated] = await db
     .update(taskTags)
     .set({ ...body })
-    .where(eq(taskTags.id, id))
+    .where(and(eq(taskTags.id, id), inArray(taskTags.projectId, tenantProjectIds)))
     .returning()
 
   return c.json({ tag: updated })
@@ -113,7 +115,10 @@ tagsRouter.delete('/:id', async (c) => {
 
   if (!tag) return c.json({ error: 'Tag not found' }, 404)
 
-  await db.delete(taskTags).where(eq(taskTags.id, id))
+  // SECURITY: scope delete by tenant (via project subquery), not just id.
+  await db
+    .delete(taskTags)
+    .where(and(eq(taskTags.id, id), inArray(taskTags.projectId, tenantProjectIds)))
 
   return c.json({ message: 'Tag deleted' })
 })

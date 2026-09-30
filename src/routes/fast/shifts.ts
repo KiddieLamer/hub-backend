@@ -1,13 +1,13 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, count } from 'drizzle-orm'
+import { eq, and, count } from 'drizzle-orm'
 import { db } from '../../db'
 import { shifts } from '../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../middleware/auth'
 import { requireModuleAccess } from '../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../middleware/tenant'
 import { parsePagination, paginated } from '../../lib/pagination'
-import { validate, getValidated } from '../../middleware/validate'
+import { getValidated } from '../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -54,13 +54,15 @@ shiftsRouter.post('/', async (c) => {
 })
 
 shiftsRouter.patch('/:id', async (c) => {
+  const tenant = c.get('tenant')
   const { id } = c.req.param()
   const body = getValidated<ReturnType<typeof createShiftSchema.partial>>(c, 'json')!
 
+  // SECURITY: scope the mutation to the caller's tenant, not just the id.
   const [updated] = await db
     .update(shifts)
     .set({ ...body, updatedAt: new Date() })
-    .where(eq(shifts.id, id))
+    .where(and(eq(shifts.id, id), eq(shifts.tenantId, tenant.tenantId)))
     .returning()
 
   if (!updated) {
@@ -71,11 +73,13 @@ shiftsRouter.patch('/:id', async (c) => {
 })
 
 shiftsRouter.delete('/:id', async (c) => {
+  const tenant = c.get('tenant')
   const { id } = c.req.param()
 
+  // SECURITY: scope the delete to the caller's tenant.
   const [deleted] = await db
     .delete(shifts)
-    .where(eq(shifts.id, id))
+    .where(and(eq(shifts.id, id), eq(shifts.tenantId, tenant.tenantId)))
     .returning()
 
   if (!deleted) {

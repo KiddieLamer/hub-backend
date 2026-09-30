@@ -224,6 +224,7 @@ invoicesRouter.post('/:id/payments', async (c) => {
   const newAmountPaid = Number(invoice.amountPaid) + body.amount
   const newStatus = newAmountPaid >= Number(invoice.grandTotal) ? 'paid' : 'partially_paid'
 
+  // SECURITY: scope to caller's tenant (id alone would allow cross-tenant write).
   await db
     .update(invoices)
     .set({
@@ -231,7 +232,7 @@ invoicesRouter.post('/:id/payments', async (c) => {
       status: newStatus,
       updatedAt: new Date(),
     })
-    .where(eq(invoices.id, id))
+    .where(and(eq(invoices.id, id), eq(invoices.tenantId, tenant.tenantId)))
 
   return c.json({ payment }, 201)
 })

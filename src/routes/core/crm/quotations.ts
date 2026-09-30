@@ -8,7 +8,7 @@ import { requireModuleAccessExcept, hasModulePermission } from '../../../middlew
 import { requireApprover, checkApprover } from '../../../lib/approvals'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 import { parsePagination, paginated } from '../../../lib/pagination'
-import { validate, getValidated } from '../../../middleware/validate'
+import { getValidated } from '../../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -190,6 +190,15 @@ quotationRouter.patch('/:id', async (c) => {
   const { id } = c.req.param()
   const body = getValidated<typeof updateQuotationSchema>(c, 'json')!
 
+  // SECURITY: verify tenant ownership BEFORE any child mutation. Previously
+  // quotationItems were deleted/inserted before this check, allowing a user
+  // from another tenant to overwrite items on a quotation they don't own
+  // (IDOR via path param). The parent lookup now gates all child writes.
+  const existing = await db.query.quotations.findFirst({
+    where: and(eq(quotations.id, id), eq(quotations.tenantId, tenant.tenantId)),
+  })
+  if (!existing) return c.json({ error: 'Quotation not found' }, 404)
+
   const updateData: Record<string, any> = { updatedAt: new Date() }
   if (body.clientId) updateData.clientId = body.clientId
   if (body.title) updateData.title = body.title
@@ -216,11 +225,6 @@ quotationRouter.patch('/:id', async (c) => {
       })
     }
   }
-
-  const existing = await db.query.quotations.findFirst({
-    where: and(eq(quotations.id, id), eq(quotations.tenantId, tenant.tenantId)),
-  })
-  if (!existing) return c.json({ error: 'Quotation not found' }, 404)
 
   const newSubtotal = body.items
     ? body.items.reduce((sum: number, item: any) => sum + parseFloat(item.quantity) * parseFloat(item.unitPrice), 0).toFixed(2)
@@ -388,7 +392,7 @@ quotationRouter.post('/:id/convert-to-invoice', async (c) => {
   await db
     .update(quotations)
     .set({ status: 'converted_to_invoice', convertedInvoiceId: invoice.id, updatedAt: new Date() })
-    .where(eq(quotations.id, id))
+    .where(and(eq(quotations.id, id), eq(quotations.tenantId, tenant.tenantId)))
 
   return c.json({ invoice }, 201)
 })

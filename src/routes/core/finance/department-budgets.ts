@@ -86,7 +86,12 @@ departmentBudgetsRouter.post('/', async (c) => {
         allocatedBudget: String(body.allocatedBudget),
         updatedAt: new Date(),
       })
-      .where(eq(departmentBudgets.id, existing.id))
+      .where(
+        and(
+          eq(departmentBudgets.id, existing.id),
+          eq(departmentBudgets.tenantId, tenant.tenantId),
+        ),
+      )
       .returning()
 
     return c.json({ budget: updated })

@@ -198,8 +198,21 @@ const useQuotaSchema = z.object({
 })
 
 subscriptionsRouter.post('/:id/quotas/use', validate(useQuotaSchema, 'json'), async (c) => {
+  const tenant = c.get('tenant')
   const { id } = c.req.param()
   const { serviceItemId } = getValidated<typeof useQuotaSchema>(c, 'json')!
+
+  // SECURITY: verify the subscription belongs to the caller's tenant before
+  // touching its quota. Previously a user from tenant A could consume the
+  // quota of tenant B by guessing the subscription UUID (IDOR).
+  const subscription = await db.query.clientSubscriptions.findFirst({
+    where: and(
+      eq(clientSubscriptions.id, id),
+      eq(clientSubscriptions.tenantId, tenant.tenantId),
+    ),
+    columns: { id: true },
+  })
+  if (!subscription) return c.json({ error: 'Subscription not found' }, 404)
 
   const quota = await db.query.clientQuotaBalances.findFirst({
     where: and(

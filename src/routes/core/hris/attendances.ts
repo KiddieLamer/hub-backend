@@ -117,7 +117,7 @@ attendancesRouter.post('/check-out', validate(checkOutSchema, 'json'), async (c)
       checkOutPhotoUrl: photoUrl,
       updatedAt: new Date(),
     })
-    .where(eq(attendances.id, existing.id))
+    .where(and(eq(attendances.id, existing.id), eq(attendances.tenantId, tenant.tenantId)))
     .returning()
 
   return c.json({ attendance: updated })
