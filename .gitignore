@@ -6,3 +6,10 @@ dist
 .env.*
 rate-limit-store.json
 .DS_Store
+
+# Audit documents (internal, not tracked)
+AUDIT_TENANT_ISOLATION.md
+TENANT_ISOLATION_AUDIT.md
+TENANT_ISOLATION_AUDIT_UMAS.md
+**/TENANT_ISOLATION_AUDIT.md
+**/AUDIT_TENANT_ISOLATION.md
