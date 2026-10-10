@@ -17,5 +17,4 @@ ALTER TABLE "clients" ADD COLUMN "score" integer DEFAULT 0 NOT NULL;--> statemen
 ALTER TABLE "clients" ADD COLUMN "grade" varchar(20) DEFAULT 'Grade C' NOT NULL;--> statement-breakpoint
 ALTER TABLE "clients" ADD COLUMN "status_tag" varchar(50) DEFAULT 'New' NOT NULL;--> statement-breakpoint
 ALTER TABLE "client_insights" ADD CONSTRAINT "client_insights_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "client_insights" ADD CONSTRAINT "client_insights_client_id_clients_id_fk" FOREIGN KEY ("client_id") REFERENCES "public"."clients"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-DROP TYPE "public"."member_role";
+ALTER TABLE "client_insights" ADD CONSTRAINT "client_insights_client_id_clients_id_fk" FOREIGN KEY ("client_id") REFERENCES "public"."clients"("id") ON DELETE cascade ON UPDATE no action;
