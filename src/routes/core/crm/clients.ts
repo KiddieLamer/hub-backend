@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { eq, and, or, ilike, isNull, count, asc, desc, type SQL } from 'drizzle-orm'
 import { db } from '../../../db'
-import { clients, clientActivities, clientInsights, clientTasks, clientWarranties, users } from '../../../db/schema'
+import { clients, clientActivities, clientInsights, clientTasks, clientWarranties, users, tenants } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
@@ -97,15 +97,33 @@ async function getOwnedClient(tenantId: string, clientId: string) {
   })
 }
 
+/**
+ * Platform scope (hub-admin) — aktif jika header `X-Platform-Scope: all`
+ * ATAU query `?scope=all`. Hanya hub-admin yang boleh (dicek dari
+ * user.platformRole). Saat aktif, query TIDAK difilter tenant_id sehingga
+ * mengembalikan gabungan semua tenant + `tenantName` untuk tagging di FE.
+ */
+function isPlatformScope(c: any): boolean {
+  const user = c.get('user')
+  if (user?.platformRole !== 'hub-admin') return false
+  const headerScope = c.req.header('X-Platform-Scope')
+  if (headerScope === 'all') return true
+  const queryScope = c.req.query('scope')
+  return queryScope === 'all'
+}
+
 clientsRouter.get('/', async (c) => {
   const tenant = c.get('tenant')
   const { search, status } = c.req.query()
   const { page, limit, offset } = parsePagination(c)
+  const platformScope = isPlatformScope(c)
 
-  const conditions: SQL[] = [
-    eq(clients.tenantId, tenant.tenantId),
-    isNull(clients.deletedAt),
-  ]
+  const conditions: SQL[] = [isNull(clients.deletedAt)]
+
+  // Tenant filter hanya saat bukan platform scope (isolasi per-company).
+  if (!platformScope) {
+    conditions.push(eq(clients.tenantId, tenant.tenantId))
+  }
 
   if (search) {
     conditions.push(
@@ -120,24 +138,43 @@ clientsRouter.get('/', async (c) => {
 
   const where = and(...conditions)
 
-  const [data, totalRows] = await Promise.all([
-    db.query.clients.findMany({
-      where,
-      orderBy: (fields, { desc }) => [desc(fields.createdAt)],
-      limit,
-      offset,
-    }),
+  // JOIN tenants.name untuk platform view → FE bisa tag tenant asal customer.
+  const [rows, totalRows] = await Promise.all([
+    db
+      .select({
+        client: clients,
+        tenantName: tenants.name,
+        tenantIsPlatform: tenants.isPlatformTenant,
+      })
+      .from(clients)
+      .innerJoin(tenants, eq(tenants.id, clients.tenantId))
+      .where(where)
+      .orderBy(desc(clients.createdAt))
+      .limit(limit)
+      .offset(offset),
     db.select({ total: count() }).from(clients).where(where),
   ])
+
+  const data = rows.map((row) => ({
+    ...row.client,
+    // Field tambahan khusus platform view; member biasa tetap dapat tenantId
+    // dari kolom clients.tenantId dan opsional tenantName (tidak di-JOIN
+    // sebelumnya, sekarang selalu di-JOIN jadi tenantName selalu terisi).
+    tenantName: row.tenantName,
+    tenantIsPlatform: row.tenantIsPlatform,
+  }))
 
   return c.json(paginated('clients', data, totalRows[0]?.total ?? 0, { page, limit, offset }))
 })
 
 clientsRouter.get('/stats', async (c) => {
   const tenant = c.get('tenant')
+  const platformScope = isPlatformScope(c)
 
   const allClients = await db.query.clients.findMany({
-    where: eq(clients.tenantId, tenant.tenantId),
+    where: platformScope
+      ? isNull(clients.deletedAt)
+      : and(eq(clients.tenantId, tenant.tenantId), isNull(clients.deletedAt)),
     columns: { status: true },
   })
 
