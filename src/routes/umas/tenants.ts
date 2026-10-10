@@ -211,7 +211,7 @@ tenantsRouter.patch('/current', async (c) => {
 const switchTenantSchema = z.object({
   tenantId: z.string().uuid(),
 })
-tenantsRouter.post('/switch', async (c) => {
+tenantsRouter.post('/switch', validate(switchTenantSchema, 'json'), async (c) => {
   const user = c.get('user')
   const body = getValidated<typeof switchTenantSchema>(c, 'json')!
 
