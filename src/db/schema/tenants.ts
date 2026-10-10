@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, timestamp, integer } from 'drizzle-orm/pg-core'
+import { pgTable, uuid, varchar, text, timestamp, integer, boolean } from 'drizzle-orm/pg-core'
 
 export const tenants = pgTable('tenants', {
   // 1. Identitas & Profil Perusahaan
@@ -35,7 +35,13 @@ export const tenants = pgTable('tenants', {
   maxUsers: integer('max_users').default(5).notNull(),
   trialEndsAt: timestamp('trial_ends_at'),
 
-  // 5. Audit & Tracking
+  // 5. Hub-admin platform scope.
+  // Tenant "platform" hanya untuk hub-admin (mis. "Hub Platform"). Dipakai
+  // sebagai workspace pribadi hub-admin dan TIDAK muncul di daftar company
+  // member biasa. Digunakan untuk memfilter tenant platform di listing.
+  isPlatformTenant: boolean('is_platform_tenant').default(false).notNull(),
+
+  // 6. Audit & Tracking
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
   deletedAt: timestamp('deleted_at'),
