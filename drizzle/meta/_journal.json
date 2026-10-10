@@ -15,6 +15,13 @@
       "when": 1791622418774,
       "tag": "0001_blue_quasar",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791623073204,
+      "tag": "0002_rare_enchantress",
+      "breakpoints": true
     }
   ]
 }
