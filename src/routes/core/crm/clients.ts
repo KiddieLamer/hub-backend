@@ -40,6 +40,13 @@ const createClientSchema = z.object({
   identityType: z.string().max(20).optional(),
   identityNumber: z.string().max(50).optional(),
   tags: z.array(z.string().max(50)).optional(),
+  socialMedia: z
+    .object({
+      instagram: z.string().max(100).optional(),
+      linkedin: z.string().max(100).optional(),
+      twitter: z.string().max(100).optional(),
+    })
+    .optional(),
 })
 
 const updateClientSchema = createClientSchema.partial()
@@ -410,6 +417,122 @@ clientsRouter.delete('/:clientId/tasks/:id', async (c) => {
   if (!deleted) return c.json({ error: 'Task not found' }, 404)
 
   return c.json({ message: 'Task deleted' })
+})
+
+// ============ INSIGHTS ============
+
+const clientInsightSchema = z.object({
+  text: z.string().min(1).max(500),
+  subtext: z.string().max(2000).optional(),
+  sortOrder: z.number().int().min(0).max(1000).optional(),
+})
+
+const clientInsightsBulkSchema = z.object({
+  insights: z.array(clientInsightSchema).max(50),
+})
+
+clientsRouter.get('/:clientId/insights', async (c) => {
+  const tenant = c.get('tenant')
+  const { clientId } = c.req.param()
+
+  const client = await getOwnedClient(tenant.tenantId, clientId)
+  if (!client) return c.json({ error: 'Client not found' }, 404)
+
+  const rows = await db.query.clientInsights.findMany({
+    where: and(
+      eq(clientInsights.clientId, clientId),
+      eq(clientInsights.tenantId, tenant.tenantId)
+    ),
+    orderBy: (fields, { asc }) => [asc(fields.sortOrder), asc(fields.createdAt)],
+  })
+
+  return c.json({ insights: rows })
+})
+
+clientsRouter.post('/:clientId/insights', validate(clientInsightSchema, 'json'), async (c) => {
+  const tenant = c.get('tenant')
+  const { clientId } = c.req.param()
+  const body = getValidated<typeof clientInsightSchema>(c, 'json')!
+
+  const client = await getOwnedClient(tenant.tenantId, clientId)
+  if (!client) return c.json({ error: 'Client not found' }, 404)
+
+  const [insight] = await db
+    .insert(clientInsights)
+    .values({
+      clientId,
+      tenantId: tenant.tenantId,
+      text: body.text,
+      subtext: body.subtext,
+      sortOrder: body.sortOrder ?? 0,
+    })
+    .returning()
+
+  return c.json({ insight }, 201)
+})
+
+clientsRouter.delete('/:clientId/insights/:id', async (c) => {
+  const tenant = c.get('tenant')
+  const { clientId, id } = c.req.param()
+
+  const client = await getOwnedClient(tenant.tenantId, clientId)
+  if (!client) return c.json({ error: 'Client not found' }, 404)
+
+  const [deleted] = await db
+    .delete(clientInsights)
+    .where(
+      and(
+        eq(clientInsights.id, id),
+        eq(clientInsights.clientId, clientId),
+        eq(clientInsights.tenantId, tenant.tenantId)
+      )
+    )
+    .returning()
+
+  if (!deleted) return c.json({ error: 'Insight not found' }, 404)
+
+  return c.json({ message: 'Insight deleted' })
+})
+
+// Replace-all semantics: hapus semua insight client ini lalu insert ulang dari body.
+clientsRouter.put('/:clientId/insights', validate(clientInsightsBulkSchema, 'json'), async (c) => {
+  const tenant = c.get('tenant')
+  const { clientId } = c.req.param()
+  const body = getValidated<typeof clientInsightsBulkSchema>(c, 'json')!
+
+  const client = await getOwnedClient(tenant.tenantId, clientId)
+  if (!client) return c.json({ error: 'Client not found' }, 404)
+
+  await db
+    .delete(clientInsights)
+    .where(
+      and(
+        eq(clientInsights.clientId, clientId),
+        eq(clientInsights.tenantId, tenant.tenantId)
+      )
+    )
+
+  if (body.insights.length > 0) {
+    await db.insert(clientInsights).values(
+      body.insights.map((row, i) => ({
+        clientId,
+        tenantId: tenant.tenantId,
+        text: row.text,
+        subtext: row.subtext,
+        sortOrder: row.sortOrder ?? i,
+      }))
+    )
+  }
+
+  const rows = await db.query.clientInsights.findMany({
+    where: and(
+      eq(clientInsights.clientId, clientId),
+      eq(clientInsights.tenantId, tenant.tenantId)
+    ),
+    orderBy: (fields, { asc }) => [asc(fields.sortOrder), asc(fields.createdAt)],
+  })
+
+  return c.json({ insights: rows })
 })
 
 // ============ WARRANTY ============

@@ -4,11 +4,8 @@ import { users } from './users'
 
 export interface SocialHandles {
   instagram?: string
-  threads?: string
-  tiktok?: string
-  youtube?: string
-  facebook?: string
-  x?: string
+  linkedin?: string
+  twitter?: string
 }
 
 export const clients = pgTable('clients', {
