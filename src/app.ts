@@ -5,6 +5,7 @@ import { corsMiddleware } from './middleware/cors'
 import { handleError } from './middleware/error'
 import { securityHeadersMiddleware } from './middleware/security'
 import { globalRateLimit } from './middleware/rateLimit'
+import { APP_VERSION } from './lib/version'
 
 // UMAS
 import auth from './routes/umas/auth'
@@ -75,7 +76,7 @@ app.use('*', securityHeadersMiddleware)
 app.use('*', globalRateLimit())
 
 app.get('/', (c) => {
-  return c.json({ name: 'hub-backend', version: '0.1.0', status: 'ok' })
+  return c.json({ name: 'hub-backend', version: APP_VERSION, status: 'ok' })
 })
 
 // Liveness + readiness in one. Must confirm the DB is reachable, otherwise a
