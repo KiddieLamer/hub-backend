@@ -107,7 +107,7 @@ auth.post('/register', rateLimit({ windowMs: 60_000, max: 10 }), validate(regist
   )
 })
 
-auth.post('/login', rateLimit({ windowMs: 15 * 60_000, max: 30 }), checkLoginLockout(), async (c) => {
+auth.post('/login', rateLimit({ windowMs: 15 * 60_000, max: 30 }), checkLoginLockout(), validate(loginSchema, 'json'), async (c) => {
   const body = getValidated<typeof loginSchema>(c, 'json')!
 
   const user = await db.query.users.findFirst({
