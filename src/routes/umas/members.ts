@@ -149,7 +149,7 @@ membersRouter.get('/me', async (c) => {
   })
 })
 
-membersRouter.post('/', async (c) => {
+membersRouter.post('/', validate(addMemberSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   if (!['owner', 'admin', 'hub-admin'].includes(tenant.tenantRole)) {
     return c.json({ error: 'Insufficient permissions' }, 403)
@@ -223,6 +223,13 @@ membersRouter.post('/', async (c) => {
   // Auto-grant the position's default RBAC role, if any.
   if (position?.defaultRoleId) {
     await grantTenantRole(body.userId, position.defaultRoleId, tenant.tenantId)
+  }
+
+  // Auto-set the target's active tenant when they don't have one yet.
+  // Without this, GET /api/tenants/current keeps returning 400 for newly
+  // invited users until someone manually updates users.current_tenant_id.
+  if (!user.currentTenantId) {
+    await db.update(users).set({ currentTenantId: tenant.tenantId }).where(eq(users.id, body.userId))
   }
 
   await recordAudit(c, tenant.tenantId, {

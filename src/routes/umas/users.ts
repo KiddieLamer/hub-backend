@@ -426,6 +426,9 @@ usersRouter.post('/', validate(createUserSchema, 'json'), async (c) => {
       tenantId: body.tenantId,
       role: body.memberRole,
     })
+    // New users start with no active tenant; point them at the tenant they
+    // were just created into so GET /api/tenants/current works immediately.
+    await db.update(users).set({ currentTenantId: body.tenantId }).where(eq(users.id, user.id))
   }
 
   return c.json({ user }, 201)
