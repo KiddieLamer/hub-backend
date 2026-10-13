@@ -192,7 +192,7 @@ usersRouter.get('/me', async (c) => {
   return c.json({ user })
 })
 
-usersRouter.patch('/me', async (c) => {
+usersRouter.patch('/me', validate(updateProfileSchema, 'json'), async (c) => {
   const authUser = c.get('user')
   const body = getValidated<typeof updateProfileSchema>(c, 'json')!
 
@@ -221,7 +221,7 @@ usersRouter.patch('/me', async (c) => {
   return c.json({ user: updated })
 })
 
-usersRouter.post('/me/change-password', async (c) => {
+usersRouter.post('/me/change-password', validate(changePasswordSchema, 'json'), async (c) => {
   const authUser = c.get('user')
   const body = getValidated<typeof changePasswordSchema>(c, 'json')!
 
@@ -254,7 +254,7 @@ const resetPasswordSchema = z.object({
   newPassword: z.string().min(6).max(100),
 })
 
-usersRouter.post('/:id/reset-password', async (c) => {
+usersRouter.post('/:id/reset-password', validate(resetPasswordSchema, 'json'), async (c) => {
   const authUser = c.get('user')
   const { id } = c.req.param()
   const body = getValidated<typeof resetPasswordSchema>(c, 'json')!
@@ -320,7 +320,7 @@ usersRouter.delete('/me', async (c) => {
   return c.json({ message: 'Account deleted' })
 })
 
-usersRouter.post('/', async (c) => {
+usersRouter.post('/', validate(createUserSchema, 'json'), async (c) => {
   const authUser = c.get('user')
   const body = getValidated<typeof createUserSchema>(c, 'json')!
 
@@ -470,7 +470,7 @@ usersRouter.get('/:id', async (c) => {
   return c.json({ user, tenants: memberships })
 })
 
-usersRouter.patch('/:id', async (c) => {
+usersRouter.patch('/:id', validate(updateProfileSchema, 'json'), async (c) => {
   const authUser = c.get('user')
   const { id } = c.req.param()
 
