@@ -29,6 +29,13 @@
       "when": 1791690000000,
       "tag": "0003_platform_tenant",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1792793954581,
+      "tag": "0004_sudden_paibok",
+      "breakpoints": true
     }
   ]
 }

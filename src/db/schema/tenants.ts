@@ -29,6 +29,14 @@ export const tenants = pgTable('tenants', {
   gmapLink: text('gmap_link'),
   gdriveLink: text('gdrive_link'),
 
+  // 3a. Akun sosial media perusahaan (URL profil).
+  tiktokUrl: text('tiktok_url'),
+  instagramUrl: text('instagram_url'),
+  facebookUrl: text('facebook_url'),
+  youtubeUrl: text('youtube_url'),
+  xUrl: text('x_url'),
+  threadsUrl: text('threads_url'),
+
   // 4. Paket & Status Subskripsi
   plan: varchar('plan', { length: 50 }).default('free').notNull(),
   status: varchar('status', { length: 20 }).default('active').notNull(),

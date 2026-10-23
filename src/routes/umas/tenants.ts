@@ -28,6 +28,12 @@ const createTenantSchema = z.object({
   logoUrl: z.string().optional(),
   gmapLink: z.string().optional(),
   gdriveLink: z.string().optional(),
+  tiktokUrl: z.string().url().optional().nullable(),
+  instagramUrl: z.string().url().optional().nullable(),
+  facebookUrl: z.string().url().optional().nullable(),
+  youtubeUrl: z.string().url().optional().nullable(),
+  xUrl: z.string().url().optional().nullable(),
+  threadsUrl: z.string().url().optional().nullable(),
   category: z.enum(TENANT_CATEGORIES).optional().default('umum'),
 })
 
@@ -43,6 +49,12 @@ const updateTenantSchema = z.object({
   logoUrl: z.string().optional(),
   gmapLink: z.string().optional(),
   gdriveLink: z.string().optional(),
+  tiktokUrl: z.string().url().optional().nullable(),
+  instagramUrl: z.string().url().optional().nullable(),
+  facebookUrl: z.string().url().optional().nullable(),
+  youtubeUrl: z.string().url().optional().nullable(),
+  xUrl: z.string().url().optional().nullable(),
+  threadsUrl: z.string().url().optional().nullable(),
   approvalThreshold: z.number().int().min(0).optional(),
 })
 
