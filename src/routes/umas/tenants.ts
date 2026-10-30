@@ -105,7 +105,7 @@ tenantsRouter.get('/all', requireHubAdmin, async (c) => {
   return c.json(paginated('tenants', allTenants, Number(total), pagination))
 })
 
-tenantsRouter.post('/', requireHubAdmin, async (c) => {
+tenantsRouter.post('/', requireHubAdmin, validate(createTenantSchema, 'json'), async (c) => {
   const body = getValidated<typeof createTenantSchema>(c, 'json')!
 
   const existing = await db.query.tenants.findFirst({
@@ -184,7 +184,7 @@ tenantsRouter.get('/current', async (c) => {
   return c.json({ tenant, role: membership?.role || 'member' })
 })
 
-tenantsRouter.patch('/current', async (c) => {
+tenantsRouter.patch('/current', validate(updateTenantSchema, 'json'), async (c) => {
   const authUser = c.get('user')
   const user = await db.query.users.findFirst({
     where: eq(users.id, authUser.id),
