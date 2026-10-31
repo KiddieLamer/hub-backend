@@ -122,6 +122,10 @@ auth.post('/login', rateLimit({ windowMs: 15 * 60_000, max: 30 }), checkLoginLoc
     return c.json({ error: 'Account deleted' }, 401)
   }
 
+  if (user.status === 'inactive') {
+    return c.json({ error: 'Account inactive' }, 403)
+  }
+
   if (user.status === 'suspended') {
     return c.json({ error: 'Account suspended' }, 403)
   }

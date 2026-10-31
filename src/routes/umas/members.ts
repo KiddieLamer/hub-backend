@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, or, ilike, count, desc } from 'drizzle-orm'
+import { eq, and, or, ilike, count, desc, isNull } from 'drizzle-orm'
 import { db } from '../../db'
 import { tenantMembers, users, tenants, positions, roles, userRoles, rolePermissions, permissions } from '../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../middleware/auth'
@@ -93,7 +93,9 @@ membersRouter.get('/', async (c) => {
       .innerJoin(users, eq(tenantMembers.userId, users.id))
       .leftJoin(positions, eq(tenantMembers.positionId, positions.id))
 
-  const conditions = [eq(tenantMembers.tenantId, tenant.tenantId)]
+  // Sembunyikan user yang sudah dihapus (soft delete) — membership lama
+  // tidak ikut terhapus saat user di-delete, jangan tampilkan sebagai ghost.
+  const conditions = [eq(tenantMembers.tenantId, tenant.tenantId), isNull(users.deletedAt)]
   if (search) {
     const term = `%${search.replace(/[%_\\]/g, '\\$&')}%`
     conditions.push(or(ilike(users.fullName, term), ilike(users.email, term))!)

@@ -23,6 +23,10 @@ const updateProfileSchema = z.object({
   dateOfBirth: z.string().optional(),
   ktpNumber: z.string().max(30).optional(),
   address: z.string().optional(),
+  // Status toggle dari Settings (active/inactive/suspended). Handler
+  // mengabaikannya kalau target adalah diri sendiri — user tidak boleh
+  // mengubah status akunnya sendiri.
+  status: z.enum(['active', 'inactive', 'suspended']).optional(),
 })
 
 const changePasswordSchema = z.object({
@@ -379,7 +383,7 @@ usersRouter.post('/', validate(createUserSchema, 'json'), async (c) => {
   }
 
   const existing = await db.query.users.findFirst({
-    where: eq(users.email, body.email),
+    where: and(eq(users.email, body.email), isNull(users.deletedAt)),
   })
 
   if (existing) {
@@ -495,6 +499,9 @@ usersRouter.patch('/:id', validate(updateProfileSchema, 'json'), async (c) => {
   const split = splitProfileDates(body)
   if ('error' in split) return c.json({ error: split.error }, 400)
 
+  // Self-edit tidak boleh mengubah status sendiri (anti self-suspend/reactivate).
+  if (id === authUser.id) delete split.rest.status
+
   const [updated] = await db
     .update(users)
     .set({
@@ -553,11 +560,23 @@ usersRouter.delete('/:id', async (c) => {
     .update(users)
     .set({ deletedAt: new Date(), updatedAt: new Date() })
     .where(and(eq(users.id, id), isNull(users.deletedAt)))
-    .returning({ id: users.id })
+    .returning({ id: users.id, email: users.email })
 
   if (!updated) {
     return c.json({ error: 'User not found' }, 404)
   }
+
+  // Bebaskan email untuk dipakai ulang: email unique di level DB, jadi
+  // tombstone email lama (tetap terlacak di audit) sebelum akun diarsipkan.
+  const freedEmail = `deleted-${updated.id}@${updated.email}`
+
+  await db
+    .update(users)
+    .set({
+      status: 'inactive',
+      email: freedEmail.length <= 255 ? freedEmail : `deleted-${updated.id}@deleted.invalid`,
+    })
+    .where(eq(users.id, updated.id))
 
   await db
     .update(refreshTokens)
@@ -580,6 +599,7 @@ usersRouter.delete('/:id', async (c) => {
       action: 'user.delete',
       module: 'umas',
       recordId: id,
+      oldValues: { email: updated.email, status: 'inactive' },
     })
   }
 
