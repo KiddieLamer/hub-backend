@@ -463,8 +463,11 @@ usersRouter.get('/:id', async (c) => {
   // Memberships drive per-person tenant display (e.g. ID card logo):
   // a user with no membership gets no tenant (placeholder), otherwise
   // their own tenant — never the viewer's active tenant.
+  // membershipId = id baris tenant_members, dibutuhkan FE untuk
+  // "Remove from Tenant" (id tenant TIDAK bisa dipakai menghapus membership).
   const memberships = await db
     .select({
+      membershipId: tenantMembers.id,
       id: tenants.id,
       name: tenants.name,
       logoUrl: tenants.logoUrl,
