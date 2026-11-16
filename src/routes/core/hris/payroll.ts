@@ -38,7 +38,7 @@ payrollRouter.get('/profile', async (c) => {
   return c.json({ profile })
 })
 
-payrollRouter.post('/profile', async (c) => {
+payrollRouter.post('/profile', validate(payrollProfileSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const body = getValidated<typeof payrollProfileSchema>(c, 'json')!
@@ -94,7 +94,7 @@ const createPayrollSchema = z.object({
   status: z.enum(['draft', 'processed', 'paid']).default('draft'),
 })
 
-payrollRouter.post('/', async (c) => {
+payrollRouter.post('/', validate(createPayrollSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const body = getValidated<typeof createPayrollSchema>(c, 'json')!

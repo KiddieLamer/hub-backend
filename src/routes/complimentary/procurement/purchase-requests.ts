@@ -100,7 +100,7 @@ purchaseRequestsRouter.get('/:id', async (c) => {
 })
 
 // Create PR
-purchaseRequestsRouter.post('/', async (c) => {
+purchaseRequestsRouter.post('/', validate(createPRSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const body = getValidated<typeof createPRSchema>(c, 'json')!
@@ -131,7 +131,7 @@ purchaseRequestsRouter.post('/', async (c) => {
 })
 
 // Update PR
-purchaseRequestsRouter.patch('/:id', async (c) => {
+purchaseRequestsRouter.patch('/:id', validate(updatePRSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
   const body = getValidated<typeof updatePRSchema>(c, 'json')!

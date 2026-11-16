@@ -84,7 +84,7 @@ rolesRouter.get('/', async (c) => {
   })
 })
 
-rolesRouter.post('/', async (c) => {
+rolesRouter.post('/', validate(createRoleSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const user = c.get('user')
 
@@ -174,7 +174,7 @@ rolesRouter.get('/permissions', async (c) => {
 })
 
 // Replace a role's permission set.
-rolesRouter.patch('/:id/permissions', async (c) => {
+rolesRouter.patch('/:id/permissions', validate(setPermissionsSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const user = c.get('user')
   const { id } = c.req.param()
@@ -252,7 +252,7 @@ rolesRouter.get('/:id/members', async (c) => {
 })
 
 // Assign an RBAC role to a tenant member (tenant-scoped).
-rolesRouter.post('/:id/assign', async (c) => {
+rolesRouter.post('/:id/assign', validate(assignRoleSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const user = c.get('user')
   const { id } = c.req.param()

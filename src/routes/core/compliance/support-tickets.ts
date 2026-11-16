@@ -110,7 +110,7 @@ supportTicketsRouter.get('/:id', async (c) => {
 })
 
 // Create ticket
-supportTicketsRouter.post('/', async (c) => {
+supportTicketsRouter.post('/', validate(createTicketSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const body = getValidated<typeof createTicketSchema>(c, 'json')!
@@ -126,7 +126,7 @@ supportTicketsRouter.post('/', async (c) => {
 })
 
 // Update ticket
-supportTicketsRouter.patch('/:id', async (c) => {
+supportTicketsRouter.patch('/:id', validate(updateTicketSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
   const body = getValidated<typeof updateTicketSchema>(c, 'json')!
@@ -147,7 +147,7 @@ supportTicketsRouter.patch('/:id', async (c) => {
 })
 
 // Update ticket status
-supportTicketsRouter.post('/:id/status', async (c) => {
+supportTicketsRouter.post('/:id/status', validate(ticketStatusSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
   const { status } = getValidated<typeof ticketStatusSchema>(c, 'json')!
@@ -170,7 +170,7 @@ supportTicketsRouter.post('/:id/status', async (c) => {
 })
 
 // Assign ticket
-supportTicketsRouter.post('/:id/assign', async (c) => {
+supportTicketsRouter.post('/:id/assign', validate(assignTicketSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
   const { userId } = getValidated<typeof assignTicketSchema>(c, 'json')!

@@ -7,7 +7,7 @@ import { authMiddleware, type Variables as AuthVariables } from '../../middlewar
 import { requireModuleAccess } from '../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../middleware/tenant'
 import { parsePagination, paginated } from '../../lib/pagination'
-import { getValidated } from '../../middleware/validate'
+import { validate, getValidated } from '../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -41,7 +41,7 @@ shiftsRouter.get('/', async (c) => {
   return c.json(paginated('shifts', data, Number(total), pagination))
 })
 
-shiftsRouter.post('/', async (c) => {
+shiftsRouter.post('/', validate(createShiftSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const body = getValidated<typeof createShiftSchema>(c, 'json')!
 

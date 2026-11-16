@@ -48,6 +48,13 @@ export async function authMiddleware(c: Context<{ Variables: Variables }>, next:
       return c.json({ error: 'Account deleted' }, 401)
     }
 
+    // "Nonaktifkan" di Settings menulis status=inactive. Tanpa guard ini
+    // akses token yang masih hidup tetap lolos sampai expired, sehingga
+    // tombol nonaktif tidak benar-benar mencabut akses.
+    if (user.status === 'inactive') {
+      return c.json({ error: 'Account inactive' }, 403)
+    }
+
     if (user.status === 'suspended') {
       return c.json({ error: 'Account suspended' }, 403)
     }

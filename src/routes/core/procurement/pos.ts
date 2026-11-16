@@ -8,7 +8,7 @@ import { requireModuleAccessExcept, hasModulePermission } from '../../../middlew
 import { checkApprover } from '../../../lib/approvals'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 import { parsePagination, paginated } from '../../../lib/pagination'
-import { getValidated } from '../../../middleware/validate'
+import { validate, getValidated } from '../../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -112,7 +112,7 @@ posRouter.get('/:id', async (c) => {
 })
 
 // Create PO
-posRouter.post('/', async (c) => {
+posRouter.post('/', validate(createPoSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const body = getValidated<typeof createPoSchema>(c, 'json')!
@@ -144,7 +144,7 @@ posRouter.post('/', async (c) => {
 })
 
 // Update PO status — draft → approved requires RACI (parent chain + amount threshold).
-posRouter.post('/:id/status', async (c) => {
+posRouter.post('/:id/status', validate(poStatusSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const { id } = c.req.param()
@@ -194,7 +194,7 @@ posRouter.post('/:id/status', async (c) => {
 })
 
 // Receive items
-posRouter.post('/:id/receive', async (c) => {
+posRouter.post('/:id/receive', validate(receiveItemsSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const { id } = c.req.param()

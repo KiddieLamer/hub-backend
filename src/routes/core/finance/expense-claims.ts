@@ -105,7 +105,7 @@ expenseClaimsRouter.get('/:id', async (c) => {
 })
 
 // Create claim
-expenseClaimsRouter.post('/', async (c) => {
+expenseClaimsRouter.post('/', validate(createClaimSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const body = getValidated<typeof createClaimSchema>(c, 'json')!
@@ -239,7 +239,7 @@ expenseClaimsRouter.post(
 )
 
 // Mark as paid
-expenseClaimsRouter.post('/:id/pay', async (c) => {
+expenseClaimsRouter.post('/:id/pay', validate(paySchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const { id } = c.req.param()

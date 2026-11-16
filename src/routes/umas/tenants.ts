@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, isNull, count } from 'drizzle-orm'
+import { eq, and, ne, isNull, count } from 'drizzle-orm'
 import { db } from '../../db'
 import { tenants, tenantMembers, users } from '../../db/schema'
 import { TENANT_CATEGORIES, normalizeCategory, seedTenantTemplate } from '../../lib/tenant-templates'
@@ -67,7 +67,10 @@ tenantsRouter.get('/', async (c) => {
     where: eq(tenantMembers.userId, user.id),
   })
 
-  const allTenants = await db.query.tenants.findMany()
+  // Company yang sudah diarsipkan tidak boleh muncul di picker / switch.
+  const allTenants = await db.query.tenants.findMany({
+    where: isNull(tenants.deletedAt),
+  })
 
   const result = allTenants
     .filter((t) => {
@@ -92,14 +95,19 @@ tenantsRouter.get('/', async (c) => {
 
 tenantsRouter.get('/all', requireHubAdmin, async (c) => {
   const pagination = parsePagination(c)
+  // Default: hanya company aktif. Hub-admin bisa meminta arsip dengan
+  // ?includeArchived=true (mis. untuk halaman Arsip / restore nanti).
+  const includeArchived = c.req.query('includeArchived') === 'true'
+  const where = includeArchived ? undefined : isNull(tenants.deletedAt)
 
   const [allTenants, [{ value: total }]] = await Promise.all([
     db.query.tenants.findMany({
+      where,
       orderBy: (tenants, { desc }) => [desc(tenants.createdAt)],
       limit: pagination.limit,
       offset: pagination.offset,
     }),
-    db.select({ value: count() }).from(tenants),
+    db.select({ value: count() }).from(tenants).where(where),
   ])
 
   return c.json(paginated('tenants', allTenants, Number(total), pagination))
@@ -143,7 +151,7 @@ tenantsRouter.post('/:id/seed-template', requireHubAdmin, async (c) => {
   const parsed = z.object({ category: z.enum(TENANT_CATEGORIES).optional() }).parse(raw)
 
   const tenant = await db.query.tenants.findFirst({
-    where: eq(tenants.id, id),
+    where: and(eq(tenants.id, id), isNull(tenants.deletedAt)),
   })
   if (!tenant) {
     return c.json({ error: 'Tenant not found' }, 404)
@@ -167,7 +175,7 @@ tenantsRouter.get('/current', async (c) => {
   }
 
   const tenant = await db.query.tenants.findFirst({
-    where: eq(tenants.id, user.currentTenantId),
+    where: and(eq(tenants.id, user.currentTenantId), isNull(tenants.deletedAt)),
   })
 
   if (!tenant) {
@@ -214,8 +222,12 @@ tenantsRouter.patch('/current', validate(updateTenantSchema, 'json'), async (c) 
   const [updated] = await db
     .update(tenants)
     .set({ ...body, updatedAt: new Date() })
-    .where(eq(tenants.id, user.currentTenantId))
+    .where(and(eq(tenants.id, user.currentTenantId), isNull(tenants.deletedAt)))
     .returning()
+
+  if (!updated) {
+    return c.json({ error: 'Tenant tidak aktif atau sudah diarsipkan' }, 404)
+  }
 
   return c.json({ tenant: updated })
 })
@@ -256,23 +268,142 @@ tenantsRouter.delete('/:id', requireHubAdmin, async (c) => {
   const { id } = c.req.param()
 
   const tenant = await db.query.tenants.findFirst({
+    where: and(eq(tenants.id, id), isNull(tenants.deletedAt)),
+  })
+  if (!tenant) {
+    return c.json({ error: 'Tenant not found' }, 404)
+  }
+  if (tenant.isPlatformTenant) {
+    return c.json({ error: 'Company platform tidak bisa diarsipkan' }, 400)
+  }
+
+  // SOFT DELETE. Versi lama melakukan hard delete: 39 tabel punya
+  // tenant_id ON DELETE CASCADE, jadi satu klik menghapus invoice, payroll,
+  // absensi, client, project, dan system_audit_logs company itu secara
+  // permanen. Sekarang baris tenant tetap ada sebagai arsip.
+  //
+  // Yang berubah:
+  //  - status = 'inactive' → tenantMiddleware memblokir user biasa
+  //  - deletedAt terisi → semua list endpoint menyembunyikannya
+  //  - membership SENGAJA dipertahankan supaya company bisa dipulihkan
+  //  - slug SENGAJA dipertahankan (unique) supaya tidak ada company baru
+  //    yang diam-diam mengambil identitas arsip; untuk memakai ulang slug,
+  //    admin harus rename arsipnya dulu.
+  const now = new Date()
+  await db
+    .update(tenants)
+    .set({ deletedAt: now, status: 'inactive', updatedAt: now })
+    .where(eq(tenants.id, id))
+
+  // Audit sekarang benar-benar tercatat: baris tenant masih ada, sehingga
+  // FK system_audit_logs.tenant_id tidak lagi gagal (dulu error 23503
+  // ditelan recordAudit secara silent).
+  await recordAudit(c, id, {
+    action: 'tenant.delete',
+    module: 'tenants',
+    recordId: id,
+    oldValues: { name: tenant.name, slug: tenant.slug, status: tenant.status },
+    newValues: { status: 'inactive', softDelete: true },
+  })
+
+  return c.json({
+    success: true,
+    archived: true,
+    message: 'Company diarsipkan. Data bisnis tetap disimpan dan bisa dipulihkan oleh platform admin.',
+  })
+})
+
+// Rename company (termasuk yang diarsipkan) — hub-admin only. Ini jalur
+// resmi untuk membebaskan slug arsip sebelum dipakai company baru: slug
+// arsip sengaja tetap terkunci (unique) supaya identitasnya tidak diam-diam
+// diambil, admin rename dulu di sini lalu buat company baru dengan slug itu.
+const renameTenantSchema = z
+  .object({
+    name: z.string().min(2).max(255).optional(),
+    slug: z.string().min(2).max(100).regex(/^[a-z0-9-]+$/, 'Slug must be lowercase alphanumeric with hyphens').optional(),
+  })
+  .refine((v) => v.name !== undefined || v.slug !== undefined, {
+    message: 'Provide at least one of name or slug',
+  })
+
+tenantsRouter.patch('/:id', requireHubAdmin, validate(renameTenantSchema, 'json'), async (c) => {
+  const { id } = c.req.param()
+  const body = getValidated<typeof renameTenantSchema>(c, 'json')!
+
+  // Tanpa filter deletedAt: justru company arsip yang paling butuh route ini.
+  const tenant = await db.query.tenants.findFirst({
     where: eq(tenants.id, id),
   })
   if (!tenant) {
     return c.json({ error: 'Tenant not found' }, 404)
   }
 
-  await db.delete(tenantMembers).where(eq(tenantMembers.tenantId, id))
-  await db.delete(tenants).where(eq(tenants.id, id))
+  const patch: Partial<typeof tenants.$inferInsert> = { updatedAt: new Date() }
+  if (body.name !== undefined) {
+    patch.name = body.name
+  }
+  if (body.slug !== undefined && body.slug !== tenant.slug) {
+    if (tenant.isPlatformTenant) {
+      return c.json({ error: 'Slug company platform tidak bisa diubah' }, 400)
+    }
+    const taken = await db.query.tenants.findFirst({
+      where: and(eq(tenants.slug, body.slug), ne(tenants.id, id)),
+    })
+    if (taken) {
+      return c.json({ error: 'Slug already taken' }, 409)
+    }
+    patch.slug = body.slug
+  }
+
+  const [updated] = await db
+    .update(tenants)
+    .set(patch)
+    .where(eq(tenants.id, id))
+    .returning()
 
   await recordAudit(c, id, {
-    action: 'tenant.delete',
+    action: 'tenant.update',
     module: 'tenants',
     recordId: id,
-    oldValues: { name: tenant.name, slug: tenant.slug, status: tenant.status },
+    oldValues: { name: tenant.name, slug: tenant.slug },
+    newValues: { name: updated.name, slug: updated.slug },
   })
 
-  return c.json({ success: true })
+  return c.json({ tenant: updated })
+})
+
+// Pulihkan company arsip — kebalikan dari DELETE /:id (soft delete).
+// Slug tidak perlu dicek ulang: strategi arsip menreserve slug miliknya,
+// jadi restore selalu bersih.
+tenantsRouter.post('/:id/restore', requireHubAdmin, async (c) => {
+  const { id } = c.req.param()
+
+  const tenant = await db.query.tenants.findFirst({
+    where: eq(tenants.id, id),
+  })
+  if (!tenant || !tenant.deletedAt) {
+    return c.json({ error: 'Archived company not found' }, 404)
+  }
+
+  const now = new Date()
+  await db
+    .update(tenants)
+    .set({ deletedAt: null, status: 'active', updatedAt: now })
+    .where(eq(tenants.id, id))
+
+  await recordAudit(c, id, {
+    action: 'tenant.restore',
+    module: 'tenants',
+    recordId: id,
+    oldValues: { status: tenant.status, deletedAt: tenant.deletedAt },
+    newValues: { status: 'active', deletedAt: null },
+  })
+
+  return c.json({
+    success: true,
+    restored: true,
+    message: 'Company dipulihkan dan aktif kembali.',
+  })
 })
 
 tenantsRouter.get('/:id', async (c) => {
@@ -283,19 +414,25 @@ tenantsRouter.get('/:id', async (c) => {
     where: and(eq(tenantMembers.userId, user.id), eq(tenantMembers.tenantId, id)),
   })
 
-  if (!membership) {
+  // Hub-admin punya bypass membership — konsisten dengan POST /switch dan
+  // GET /all yang sama-sama terbuka untuknya. Hub-admin juga boleh melihat
+  // company arsip: dibutuhkan untuk halaman Arsip/restore.
+  if (!membership && user.platformRole !== 'hub-admin') {
     return c.json({ error: 'Access denied' }, 403)
   }
 
+  const isHubAdmin = user.platformRole === 'hub-admin'
   const tenant = await db.query.tenants.findFirst({
-    where: eq(tenants.id, id),
+    where: isHubAdmin
+      ? eq(tenants.id, id)
+      : and(eq(tenants.id, id), isNull(tenants.deletedAt)),
   })
 
   if (!tenant) {
     return c.json({ error: 'Tenant not found' }, 404)
   }
 
-  return c.json({ tenant, role: membership.role })
+  return c.json({ tenant, role: membership?.role || 'hub-admin' })
 })
 
 export default tenantsRouter

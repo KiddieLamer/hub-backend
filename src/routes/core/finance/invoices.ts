@@ -117,7 +117,7 @@ invoicesRouter.get('/:id', async (c) => {
 })
 
 // Create invoice
-invoicesRouter.post('/', async (c) => {
+invoicesRouter.post('/', validate(createInvoiceSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const body = getValidated<typeof createInvoiceSchema>(c, 'json')!
@@ -198,7 +198,7 @@ invoicesRouter.patch('/:id', validate(createInvoiceSchema.partial(), 'json'), as
 })
 
 // Record payment
-invoicesRouter.post('/:id/payments', async (c) => {
+invoicesRouter.post('/:id/payments', validate(recordPaymentSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const { id } = c.req.param()

@@ -86,7 +86,7 @@ purchaseOrdersRouter.get('/:id', async (c) => {
 })
 
 // Create PO (always starts as draft — send requires approval chain).
-purchaseOrdersRouter.post('/', async (c) => {
+purchaseOrdersRouter.post('/', validate(createPOSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const body = getValidated<typeof createPOSchema>(c, 'json')!
@@ -106,7 +106,7 @@ purchaseOrdersRouter.post('/', async (c) => {
 })
 
 // Update PO — approval to sent_to_vendor follows RACI (parent + amount threshold).
-purchaseOrdersRouter.patch('/:id', async (c) => {
+purchaseOrdersRouter.patch('/:id', validate(updatePOSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
   const body = getValidated<typeof updatePOSchema>(c, 'json')!

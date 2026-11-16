@@ -1,12 +1,13 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { and, desc, eq, isNull } from 'drizzle-orm'
+import { and, desc, eq } from 'drizzle-orm'
+import { notDeletedUser } from '../../lib/user-scope'
 import { authMiddleware, type Variables as AuthVariables } from '../../middleware/auth'
 import { tenantMiddleware, type TenantVariables } from '../../middleware/tenant'
 import { db } from '../../db'
 import { notifications as notificationsTable, users, tenantMembers } from '../../db/schema'
 import { parsePagination, paginated } from '../../lib/pagination'
-import { getValidated } from '../../middleware/validate'
+import { validate, getValidated } from '../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -115,19 +116,19 @@ notifications.post('/read-all', async (c) => {
   return c.json({ message: 'All marked as read' })
 })
 
-notifications.post('/email', async (c) => {
+notifications.post('/email', validate(emailSchema, 'json'), async (c) => {
   const body = getValidated<typeof emailSchema>(c, 'json')!
   console.log(`[Notification] Email to: ${body.to}, subject: ${body.subject}`)
   return c.json({ message: 'Email queued', to: body.to, subject: body.subject })
 })
 
-notifications.post('/whatsapp', async (c) => {
+notifications.post('/whatsapp', validate(whatsappSchema, 'json'), async (c) => {
   const body = getValidated<typeof whatsappSchema>(c, 'json')!
   console.log(`[Notification] WhatsApp to: ${body.to}`)
   return c.json({ message: 'WhatsApp queued', to: body.to })
 })
 
-notifications.post('/push', async (c) => {
+notifications.post('/push', validate(pushSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const body = getValidated<typeof pushSchema>(c, 'json')!
 
@@ -147,7 +148,7 @@ notifications.post('/push', async (c) => {
   }
 
   const target = await db.query.users.findFirst({
-    where: and(eq(users.id, body.userId), isNull(users.deletedAt)),
+    where: and(eq(users.id, body.userId), notDeletedUser),
     columns: { id: true },
   })
   if (!target) {

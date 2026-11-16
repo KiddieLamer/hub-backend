@@ -84,7 +84,7 @@ positionsRouter.get('/', async (c) => {
   return c.json(paginated('positions', rows, Number(total), pagination))
 })
 
-positionsRouter.post('/', async (c) => {
+positionsRouter.post('/', validate(positionSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const user = c.get('user')
   if (!canManage(tenant.tenantRole, user.platformRole)) {

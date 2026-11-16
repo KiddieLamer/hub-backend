@@ -57,7 +57,7 @@ expenseCategoriesRouter.get('/:id', async (c) => {
 })
 
 // Create category
-expenseCategoriesRouter.post('/', async (c) => {
+expenseCategoriesRouter.post('/', validate(createCategorySchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const body = getValidated<typeof createCategorySchema>(c, 'json')!
 

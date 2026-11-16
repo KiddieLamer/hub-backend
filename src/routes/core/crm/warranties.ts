@@ -90,7 +90,7 @@ warrantiesRouter.get('/:id', async (c) => {
 })
 
 // Create warranty
-warrantiesRouter.post('/', async (c) => {
+warrantiesRouter.post('/', validate(createWarrantySchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const body = getValidated<typeof createWarrantySchema>(c, 'json')!
 
@@ -103,7 +103,7 @@ warrantiesRouter.post('/', async (c) => {
 })
 
 // Update warranty
-warrantiesRouter.patch('/:id', async (c) => {
+warrantiesRouter.patch('/:id', validate(updateWarrantySchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
   const body = getValidated<typeof updateWarrantySchema>(c, 'json')!
@@ -124,7 +124,7 @@ const updateWarrantyStatusSchema = z.object({
   status: z.enum(['active', 'claimed', 'expired', 'cancelled']),
 })
 
-warrantiesRouter.post('/:id/status', async (c) => {
+warrantiesRouter.post('/:id/status', validate(updateWarrantyStatusSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
   const { status } = getValidated<typeof updateWarrantyStatusSchema>(c, 'json')!
@@ -190,7 +190,7 @@ warrantiesRouter.get('/claims/:id', async (c) => {
 })
 
 // Create claim
-warrantiesRouter.post('/claims', async (c) => {
+warrantiesRouter.post('/claims', validate(createClaimSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const body = getValidated<typeof createClaimSchema>(c, 'json')!
 
@@ -215,7 +215,7 @@ const updateClaimStatusSchema = z.object({
   resolutionNotes: z.string().optional(),
 })
 
-warrantiesRouter.post('/claims/:id/status', async (c) => {
+warrantiesRouter.post('/claims/:id/status', validate(updateClaimStatusSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
   const { status, resolutionNotes } = getValidated<typeof updateClaimStatusSchema>(c, 'json')!

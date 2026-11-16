@@ -55,7 +55,7 @@ catalogCategoriesRouter.get('/:id', async (c) => {
 })
 
 // Create category
-catalogCategoriesRouter.post('/', async (c) => {
+catalogCategoriesRouter.post('/', validate(createCategorySchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const body = getValidated<typeof createCategorySchema>(c, 'json')!
 

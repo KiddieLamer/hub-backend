@@ -62,7 +62,7 @@ auditLogsRouter.get('/:id', async (c) => {
 })
 
 // Create log (system use only - requires admin role)
-auditLogsRouter.post('/', async (c) => {
+auditLogsRouter.post('/', validate(createAuditLogSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
 

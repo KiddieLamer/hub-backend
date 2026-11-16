@@ -1,12 +1,16 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, or, ilike, and, isNull, inArray, count } from 'drizzle-orm'
+import { eq, or, ilike, and, isNotNull, inArray, count } from 'drizzle-orm'
 import { db } from '../../db'
 import { users, tenantMembers, refreshTokens, tenants } from '../../db/schema'
 import { authMiddleware, type Variables } from '../../middleware/auth'
+import { requireHubAdmin } from '../../middleware/platform'
 import { hashPassword } from '../../lib/password'
 import { parsePagination, paginated } from '../../lib/pagination'
 import { recordAudit } from '../../lib/audit'
+import { deprovisionUser, SoleOwnerError } from '../../lib/deprovision'
+import { notDeletedUser } from '../../lib/user-scope'
+import { isWithinRetention, purgeAfter } from '../../lib/retention'
 import { validate, getValidated } from '../../middleware/validate'
 
 const usersRouter = new Hono<{ Variables: Variables }>()
@@ -62,6 +66,14 @@ const createUserSchema = z.object({
   status: z.enum(['active', 'inactive', 'suspended']).default('active'),
   tenantId: z.string().uuid().optional(),
   memberRole: z.enum(['owner', 'admin', 'member']).default('member'),
+})
+
+// PII lama sudah dianonimkan saat deprovision, jadi email baru WAJIB
+// dikirim saat memulihkan akun dari arsip.
+const restoreUserSchema = z.object({
+  email: z.string().email(),
+  fullName: z.string().min(2).max(255).optional(),
+  phoneNumber: z.string().max(20).optional(),
 })
 
 async function canManageTarget(
@@ -123,7 +135,7 @@ usersRouter.get('/', async (c) => {
       )
     : undefined
 
-  const conditions = [isNull(users.deletedAt)]
+  const conditions = [notDeletedUser]
 
   if (status) {
     conditions.push(eq(users.status, status))
@@ -202,6 +214,12 @@ usersRouter.patch('/me', validate(updateProfileSchema, 'json'), async (c) => {
 
   const split = splitProfileDates(body)
   if ('error' in split) return c.json({ error: split.error }, 400)
+
+  // Anti self-suspend: field `status` di schema ini untuk PATCH /:id (toggle
+  // admin dari Settings). /me wajib membuangnya seperti yang /:id lakukan
+  // untuk diri sendiri — tanpa ini user bisa menonaktifkan akunnya sendiri
+  // dan terkunci keluar dari semua endpoint (BUG#1 sub-case TC9i).
+  delete split.rest.status
 
   const [updated] = await db
     .update(users)
@@ -315,11 +333,30 @@ usersRouter.post('/:id/reset-password', validate(resetPasswordSchema, 'json'), a
 usersRouter.delete('/me', async (c) => {
   const authUser = c.get('user')
 
-  // Soft delete
-  await db
-    .update(users)
-    .set({ deletedAt: new Date(), updatedAt: new Date() })
-    .where(eq(users.id, authUser.id))
+  // Self-delete must be just as complete as an admin delete: revoke every
+  // membership and role grant, otherwise the account lingers on Company.
+  let result: Awaited<ReturnType<typeof deprovisionUser>> = null
+  try {
+    result = await deprovisionUser(authUser.id)
+  } catch (err) {
+    if (err instanceof SoleOwnerError) {
+      return c.json({ error: 'Transfer kepemilikan company terlebih dahulu', tenantIds: err.tenantIds }, 409)
+    }
+    throw err
+  }
+  if (!result) {
+    return c.json({ error: 'User not found' }, 404)
+  }
+
+  const auditTenantId = result.tenantIds[0] ?? null
+  if (auditTenantId) {
+    await recordAudit(c, auditTenantId, {
+      action: 'user.self.delete',
+      module: 'umas',
+      recordId: authUser.id,
+      oldValues: { email: result.previousEmail, status: result.previousStatus },
+    })
+  }
 
   return c.json({ message: 'Account deleted' })
 })
@@ -383,7 +420,7 @@ usersRouter.post('/', validate(createUserSchema, 'json'), async (c) => {
   }
 
   const existing = await db.query.users.findFirst({
-    where: and(eq(users.email, body.email), isNull(users.deletedAt)),
+    where: and(eq(users.email, body.email), notDeletedUser),
   })
 
   if (existing) {
@@ -438,6 +475,95 @@ usersRouter.post('/', validate(createUserSchema, 'json'), async (c) => {
   return c.json({ user }, 201)
 })
 
+// ==================== ARSIP & PEMULIHAN AKUN ====================
+// WAJIB didaftarkan sebelum GET /:id, kalau tidak '/archived' akan
+// tertangkap router sebagai :id.
+usersRouter.get('/archived', requireHubAdmin, async (c) => {
+  const pagination = parsePagination(c)
+  const where = isNotNull(users.deletedAt)
+
+  const [data, totalRows] = await Promise.all([
+    db.query.users.findMany({
+      where,
+      columns: {
+        id: true, email: true, fullName: true, status: true,
+        createdAt: true, deletedAt: true,
+      },
+      orderBy: (u, { desc }) => [desc(u.deletedAt)],
+      limit: pagination.limit,
+      offset: pagination.offset,
+    }),
+    db.select({ total: count() }).from(users).where(where),
+  ])
+
+  const archived = data.map((u) => ({
+    ...u,
+    canRestore: isWithinRetention(u.deletedAt),
+    purgeAfter: purgeAfter(u.deletedAt!),
+  }))
+
+  return c.json(paginated('users', archived, Number(totalRows[0]?.total ?? 0), pagination))
+})
+
+usersRouter.post('/:id/restore', requireHubAdmin, validate(restoreUserSchema, 'json'), async (c) => {
+  const authUser = c.get('user')
+  const { id } = c.req.param()
+  const body = getValidated<typeof restoreUserSchema>(c, 'json')!
+
+  const target = await db.query.users.findFirst({
+    where: eq(users.id, id),
+    columns: { id: true, fullName: true, deletedAt: true },
+  })
+  if (!target || !target.deletedAt) {
+    return c.json({ error: 'Archived user not found' }, 404)
+  }
+  if (!isWithinRetention(target.deletedAt)) {
+    return c.json({ error: 'Masa retensi arsip (90 hari) sudah habis' }, 410)
+  }
+
+  const taken = await db.query.users.findFirst({
+    where: and(eq(users.email, body.email), notDeletedUser),
+  })
+  if (taken) {
+    return c.json({ error: 'Email sudah terdaftar' }, 409)
+  }
+
+  const [restored] = await db
+    .update(users)
+    .set({
+      email: body.email,
+      fullName: body.fullName ?? target.fullName,
+      phoneNumber: body.phoneNumber ?? null,
+      deletedAt: null,
+      status: 'active',
+      currentTenantId: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(users.id, id))
+    .returning({
+      id: users.id, email: users.email, fullName: users.fullName,
+      status: users.status,
+    })
+
+  const caller = await db.query.users.findFirst({
+    where: eq(users.id, authUser.id),
+    columns: { currentTenantId: true },
+  })
+  if (caller?.currentTenantId) {
+    await recordAudit(c, caller.currentTenantId, {
+      action: 'user.restore',
+      module: 'umas',
+      recordId: id,
+      newValues: { email: body.email },
+    })
+  }
+
+  return c.json({
+    user: restored,
+    message: 'Akun dipulihkan. Tambahkan kembali ke company lewat POST /api/members.',
+  })
+})
+
 usersRouter.get('/:id', async (c) => {
   const authUser = c.get('user')
   const { id } = c.req.param()
@@ -447,7 +573,7 @@ usersRouter.get('/:id', async (c) => {
   }
 
   const user = await db.query.users.findFirst({
-    where: and(eq(users.id, id), isNull(users.deletedAt)),
+    where: and(eq(users.id, id), notDeletedUser),
     columns: {
       id: true, email: true, fullName: true, phoneNumber: true, avatarUrl: true,
       employeeId: true, jobTitle: true, department: true, role: true, status: true,
@@ -492,7 +618,7 @@ usersRouter.patch('/:id', validate(updateProfileSchema, 'json'), async (c) => {
 
   if (body.email) {
     const taken = await db.query.users.findFirst({
-      where: and(eq(users.email, body.email), isNull(users.deletedAt)),
+      where: and(eq(users.email, body.email), notDeletedUser),
     })
     if (taken && taken.id !== id) {
       return c.json({ error: 'Email sudah terdaftar' }, 409)
@@ -512,7 +638,7 @@ usersRouter.patch('/:id', validate(updateProfileSchema, 'json'), async (c) => {
       ...(split.dateOfBirth !== undefined ? { dateOfBirth: split.dateOfBirth } : {}),
       updatedAt: new Date(),
     })
-    .where(and(eq(users.id, id), isNull(users.deletedAt)))
+    .where(and(eq(users.id, id), notDeletedUser))
     .returning({
       id: users.id,
       email: users.email,
@@ -559,54 +685,42 @@ usersRouter.delete('/:id', async (c) => {
     return c.json({ error: 'Insufficient permissions' }, 403)
   }
 
-  const [updated] = await db
-    .update(users)
-    .set({ deletedAt: new Date(), updatedAt: new Date() })
-    .where(and(eq(users.id, id), isNull(users.deletedAt)))
-    .returning({ id: users.id, email: users.email })
-
-  if (!updated) {
+  // Satu transaksi: cabut sesi, hapus membership + RBAC grant dari SEMUA
+  // tenant, anonimisasi PII, baru tandai deleted_at. Kalau hanya set
+  // deleted_at, baris tenant_members tetap hidup dan akun muncul lagi
+  // sebagai ghost member di halaman Company.
+  let result: Awaited<ReturnType<typeof deprovisionUser>> = null
+  try {
+    result = await deprovisionUser(id)
+  } catch (err) {
+    if (err instanceof SoleOwnerError) {
+      return c.json({ error: 'Transfer kepemilikan company terlebih dahulu', tenantIds: err.tenantIds }, 409)
+    }
+    throw err
+  }
+  if (!result) {
     return c.json({ error: 'User not found' }, 404)
   }
 
-  // Bebaskan email untuk dipakai ulang: email unique di level DB, jadi
-  // tombstone email lama (tetap terlacak di audit) sebelum akun diarsipkan.
-  const freedEmail = `deleted-${updated.id}@${updated.email}`
-
-  await db
-    .update(users)
-    .set({
-      status: 'inactive',
-      email: freedEmail.length <= 255 ? freedEmail : `deleted-${updated.id}@deleted.invalid`,
-    })
-    .where(eq(users.id, updated.id))
-
-  await db
-    .update(refreshTokens)
-    .set({ revokedAt: new Date() })
-    .where(eq(refreshTokens.userId, id))
-
-  // Audit: scope to the deleted user's tenant membership when available,
-  // otherwise fall back to the caller's current tenant.
-  const targetMembership = await db.query.tenantMembers.findFirst({
-    where: eq(tenantMembers.userId, id),
-    columns: { tenantId: true },
-  })
+  // Audit: scope ke tenant terakhir si target, kalau tidak ada pakai
+  // tenant aktif si pemanggil. Membership target sudah dihapus di atas,
+  // jadi pakai snapshot tenantIds dari hasil deprovision.
   const callerRow = await db.query.users.findFirst({
     where: eq(users.id, authUser.id),
     columns: { currentTenantId: true },
   })
-  const auditTenantId = targetMembership?.tenantId ?? callerRow?.currentTenantId ?? null
+  const auditTenantId = result.tenantIds[0] ?? callerRow?.currentTenantId ?? null
   if (auditTenantId) {
     await recordAudit(c, auditTenantId, {
       action: 'user.delete',
       module: 'umas',
       recordId: id,
-      oldValues: { email: updated.email, status: 'inactive' },
+      oldValues: { email: result.previousEmail, status: result.previousStatus },
+      newValues: { status: 'inactive', tenantsRevoked: result.tenantIds.length },
     })
   }
 
-  return c.json({ message: 'User deleted' })
+  return c.json({ message: 'User deleted', tenantsRevoked: result.tenantIds.length })
 })
 
 export default usersRouter

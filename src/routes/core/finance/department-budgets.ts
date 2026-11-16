@@ -64,7 +64,7 @@ departmentBudgetsRouter.get('/:id', async (c) => {
 })
 
 // Create or update budget
-departmentBudgetsRouter.post('/', async (c) => {
+departmentBudgetsRouter.post('/', validate(createBudgetSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const body = getValidated<typeof createBudgetSchema>(c, 'json')!
 

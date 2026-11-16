@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, or, ilike, count, desc, isNull } from 'drizzle-orm'
+import { eq, and, or, ilike, count, desc } from 'drizzle-orm'
+import { notDeletedUser } from '../../lib/user-scope'
 import { db } from '../../db'
 import { tenantMembers, users, tenants, positions, roles, userRoles, rolePermissions, permissions } from '../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../middleware/auth'
@@ -8,6 +9,7 @@ import { tenantMiddleware, type TenantVariables } from '../../middleware/tenant'
 import { parsePagination, paginated } from '../../lib/pagination'
 import { recordAudit } from '../../lib/audit'
 import { validate, getValidated } from '../../middleware/validate'
+import { redactMemberPii } from '../../lib/member-pii'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -57,7 +59,13 @@ async function grantTenantRole(userId: string, roleId: string, tenantId: string)
 
 membersRouter.get('/', async (c) => {
   const tenant = c.get('tenant')
+  const authUser = c.get('user')
   const { search } = c.req.query()
+
+  // PII hanya utuh untuk manager; member biasa dapat redacted (kecuali
+  // baris dirinya sendiri) — lihat redactMemberPii.
+  const isManager = ['hub-admin', 'owner', 'admin'].includes(tenant.tenantRole)
+  const piiOpts = { viewerId: authUser.id, isManager }
 
   // Opt-in pagination: callers that pass page/limit get a paged response,
   // everyone else (roles picker, company page) keeps the full list.
@@ -95,7 +103,7 @@ membersRouter.get('/', async (c) => {
 
   // Sembunyikan user yang sudah dihapus (soft delete) — membership lama
   // tidak ikut terhapus saat user di-delete, jangan tampilkan sebagai ghost.
-  const conditions = [eq(tenantMembers.tenantId, tenant.tenantId), isNull(users.deletedAt)]
+  const conditions = [eq(tenantMembers.tenantId, tenant.tenantId), notDeletedUser]
   if (search) {
     const term = `%${search.replace(/[%_\\]/g, '\\$&')}%`
     conditions.push(or(ilike(users.fullName, term), ilike(users.email, term))!)
@@ -104,12 +112,15 @@ membersRouter.get('/', async (c) => {
   const orderBy = desc(tenantMembers.createdAt)
 
   if (!wantsPagination) {
-    const data = await selectMemberRows().where(where).orderBy(orderBy)
+    const data = redactMemberPii(
+      await selectMemberRows().where(where).orderBy(orderBy),
+      piiOpts,
+    )
     return c.json({ members: data })
   }
 
   const offset = (page - 1) * limit
-  const [data, totalRows] = await Promise.all([
+  const [rows, totalRows] = await Promise.all([
     selectMemberRows().where(where).orderBy(orderBy).limit(limit).offset(offset),
     db
       .select({ total: count() })
@@ -118,7 +129,12 @@ membersRouter.get('/', async (c) => {
       .where(where),
   ])
 
-  return c.json({ members: data, total: totalRows[0]?.total ?? 0, page, limit })
+  return c.json({
+    members: redactMemberPii(rows, piiOpts),
+    total: totalRows[0]?.total ?? 0,
+    page,
+    limit,
+  })
 })
 
 membersRouter.get('/me', async (c) => {
@@ -227,6 +243,18 @@ membersRouter.post('/', validate(addMemberSchema, 'json'), async (c) => {
     await grantTenantRole(body.userId, position.defaultRoleId, tenant.tenantId)
   }
 
+  // Paritas dengan backfill RBAC: member baru otomatis dapat role Staff
+  // default tenant supaya permission-nya tidak kosong (tanpa ini member
+  // yang ditambahkan SETELAH migrasi backfill tidak punya akses modul
+  // apapun — 403 bahkan untuk read).
+  const staffRole = await db.query.roles.findFirst({
+    where: and(eq(roles.tenantId, tenant.tenantId), eq(roles.name, 'Staff')),
+    columns: { id: true },
+  })
+  if (staffRole) {
+    await grantTenantRole(body.userId, staffRole.id, tenant.tenantId)
+  }
+
   // Auto-set the target's active tenant when they don't have one yet.
   // Without this, GET /api/tenants/current keeps returning 400 for newly
   // invited users until someone manually updates users.current_tenant_id.
@@ -244,7 +272,7 @@ membersRouter.post('/', validate(addMemberSchema, 'json'), async (c) => {
   return c.json({ member }, 201)
 })
 
-membersRouter.patch('/:id/role', async (c) => {
+membersRouter.patch('/:id/role', validate(updateMemberRoleSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   if (!['owner', 'admin', 'hub-admin'].includes(tenant.tenantRole)) {
     return c.json({ error: 'Insufficient permissions' }, 403)
@@ -276,7 +304,7 @@ membersRouter.patch('/:id/role', async (c) => {
   return c.json({ member: updated })
 })
 
-membersRouter.patch('/:id/job-title', async (c) => {
+membersRouter.patch('/:id/job-title', validate(updateJobTitleSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   if (!['owner', 'admin', 'hub-admin'].includes(tenant.tenantRole)) {
     return c.json({ error: 'Insufficient permissions' }, 403)
@@ -297,7 +325,7 @@ membersRouter.patch('/:id/job-title', async (c) => {
   return c.json({ member: updated })
 })
 
-membersRouter.patch('/:id/position', async (c) => {
+membersRouter.patch('/:id/position', validate(updateMemberPositionSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   if (!['owner', 'admin', 'hub-admin'].includes(tenant.tenantRole)) {
     return c.json({ error: 'Insufficient permissions' }, 403)

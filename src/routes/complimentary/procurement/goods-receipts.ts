@@ -69,7 +69,7 @@ goodsReceiptsRouter.get('/:id', async (c) => {
 })
 
 // Create GR
-goodsReceiptsRouter.post('/', async (c) => {
+goodsReceiptsRouter.post('/', validate(createGRSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const body = getValidated<typeof createGRSchema>(c, 'json')!
@@ -89,7 +89,7 @@ goodsReceiptsRouter.post('/', async (c) => {
 })
 
 // Update GR
-goodsReceiptsRouter.patch('/:id', async (c) => {
+goodsReceiptsRouter.patch('/:id', validate(updateGRSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
   const body = getValidated<typeof updateGRSchema>(c, 'json')!

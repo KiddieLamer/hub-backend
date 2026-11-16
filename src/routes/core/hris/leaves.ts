@@ -41,7 +41,7 @@ leavesRouter.get('/types', async (c) => {
   return c.json({ leaveTypes: data })
 })
 
-leavesRouter.post('/types', async (c) => {
+leavesRouter.post('/types', validate(leaveTypeSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const body = getValidated<typeof leaveTypeSchema>(c, 'json')!
 
@@ -98,7 +98,7 @@ leavesRouter.get('/requests', async (c) => {
   return c.json({ leaveRequests: data })
 })
 
-leavesRouter.post('/requests', async (c) => {
+leavesRouter.post('/requests', validate(leaveRequestSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const body = getValidated<typeof leaveRequestSchema>(c, 'json')!

@@ -70,7 +70,7 @@ suppliersRouter.get('/:id', async (c) => {
 })
 
 // Create supplier
-suppliersRouter.post('/', async (c) => {
+suppliersRouter.post('/', validate(createSupplierSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const body = getValidated<typeof createSupplierSchema>(c, 'json')!
 
@@ -83,7 +83,7 @@ suppliersRouter.post('/', async (c) => {
 })
 
 // Update supplier
-suppliersRouter.patch('/:id', async (c) => {
+suppliersRouter.patch('/:id', validate(updateSupplierSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
   const body = getValidated<typeof updateSupplierSchema>(c, 'json')!

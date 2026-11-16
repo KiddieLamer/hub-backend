@@ -44,7 +44,7 @@ overtimeRouter.get('/', async (c) => {
   return c.json(paginated('overtimeRequests', data, Number(total), pagination))
 })
 
-overtimeRouter.post('/', async (c) => {
+overtimeRouter.post('/', validate(overtimeSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const body = getValidated<typeof overtimeSchema>(c, 'json')!

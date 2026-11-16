@@ -98,7 +98,7 @@ subscriptionsRouter.get('/:id', async (c) => {
 })
 
 // Create subscription
-subscriptionsRouter.post('/', async (c) => {
+subscriptionsRouter.post('/', validate(createSubscriptionSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const body = getValidated<typeof createSubscriptionSchema>(c, 'json')!
 

@@ -1,13 +1,13 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, inArray, count } from 'drizzle-orm'
+import { eq, and, inArray, isNull, SQL, count } from 'drizzle-orm'
 import { db } from '../../../db'
 import { taskTags, projects } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 import { parsePagination, paginated } from '../../../lib/pagination'
-import { getValidated } from '../../../middleware/validate'
+import { validate, getValidated } from '../../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
@@ -24,17 +24,31 @@ const createTagSchema = z.object({
 
 const updateTagSchema = createTagSchema.partial()
 
+// Platform scope — sama dengan projects.ts/clients.ts.
+function isPlatformScope(c: any): boolean {
+  const user = c.get('user')
+  if (user?.platformRole !== 'hub-admin') return false
+  const headerScope = c.req.header('X-Platform-Scope')
+  if (headerScope === 'all') return true
+  const queryScope = c.req.query('scope')
+  return queryScope === 'all'
+}
+
 tagsRouter.get('/', async (c) => {
   const tenant = c.get('tenant')
   const { projectId } = c.req.query()
   const pagination = parsePagination(c)
 
+  // Isolasi via project + soft delete (tag project terhapus ikut tersembunyi).
   const tenantProjectIds = db
     .select({ id: projects.id })
     .from(projects)
-    .where(eq(projects.tenantId, tenant.tenantId))
+    .where(and(eq(projects.tenantId, tenant.tenantId), isNull(projects.deletedAt)))
 
-  const conditions = [inArray(taskTags.projectId, tenantProjectIds)]
+  // Platform scope (hub-admin): gabungan tags semua tenant.
+  const conditions: SQL[] = isPlatformScope(c)
+    ? []
+    : [inArray(taskTags.projectId, tenantProjectIds)]
 
   if (projectId) conditions.push(eq(taskTags.projectId, projectId))
 
@@ -53,14 +67,15 @@ tagsRouter.get('/', async (c) => {
   return c.json(paginated('tags', data, Number(total), pagination))
 })
 
-tagsRouter.post('/', async (c) => {
+tagsRouter.post('/', validate(createTagSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const body = getValidated<typeof createTagSchema>(c, 'json')!
 
+  // Isolasi via project + soft delete (tag project terhapus ikut tersembunyi).
   const tenantProjectIds = db
     .select({ id: projects.id })
     .from(projects)
-    .where(eq(projects.tenantId, tenant.tenantId))
+    .where(and(eq(projects.tenantId, tenant.tenantId), isNull(projects.deletedAt)))
 
   const projectAllowed = await db.query.projects.findFirst({
     where: and(eq(projects.id, body.projectId), inArray(projects.id, tenantProjectIds)),
@@ -73,15 +88,16 @@ tagsRouter.post('/', async (c) => {
   return c.json({ tag }, 201)
 })
 
-tagsRouter.patch('/:id', async (c) => {
+tagsRouter.patch('/:id', validate(updateTagSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
   const body = getValidated<typeof updateTagSchema>(c, 'json')!
 
+  // Isolasi via project + soft delete (tag project terhapus ikut tersembunyi).
   const tenantProjectIds = db
     .select({ id: projects.id })
     .from(projects)
-    .where(eq(projects.tenantId, tenant.tenantId))
+    .where(and(eq(projects.tenantId, tenant.tenantId), isNull(projects.deletedAt)))
 
   const tag = await db.query.taskTags.findFirst({
     where: and(eq(taskTags.id, id), inArray(taskTags.projectId, tenantProjectIds)),
@@ -104,10 +120,11 @@ tagsRouter.delete('/:id', async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
 
+  // Isolasi via project + soft delete (tag project terhapus ikut tersembunyi).
   const tenantProjectIds = db
     .select({ id: projects.id })
     .from(projects)
-    .where(eq(projects.tenantId, tenant.tenantId))
+    .where(and(eq(projects.tenantId, tenant.tenantId), isNull(projects.deletedAt)))
 
   const tag = await db.query.taskTags.findFirst({
     where: and(eq(taskTags.id, id), inArray(taskTags.projectId, tenantProjectIds)),

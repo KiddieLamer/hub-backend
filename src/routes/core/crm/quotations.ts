@@ -1,18 +1,40 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, or, ilike, count, type SQL } from 'drizzle-orm'
+import { eq, and, or, ilike, count, isNull, type SQL } from 'drizzle-orm'
 import { db } from '../../../db'
-import { quotations, quotationItems, invoices, projects } from '../../../db/schema'
+import { quotations, quotationItems, invoices, projects, tenants } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { requireModuleAccessExcept, hasModulePermission } from '../../../middleware/rbac'
 import { requireApprover, checkApprover } from '../../../lib/approvals'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 import { parsePagination, paginated } from '../../../lib/pagination'
-import { getValidated } from '../../../middleware/validate'
+
+// Platform scope: header X-Platform-Scope: all ATAU query ?scope=all —
+// hanya efektif untuk hub-admin (parity dengan clients.ts).
+function isPlatformScope(c: any): boolean {
+  const user = c.get('user') as { platformRole?: string | null } | undefined
+  if (user?.platformRole !== 'hub-admin') return false
+  return c.req.header('X-Platform-Scope') === 'all' || c.req.query('scope') === 'all'
+}
+import { validate, getValidated } from '../../../middleware/validate'
 
 type Variables = AuthVariables & TenantVariables
 
 const quotationRouter = new Hono<{ Variables: Variables }>()
+
+/**
+ * Quotation + items-nya dalam satu bentuk response. Menggantikan
+ * `with: { items: true }` — relasi drizzle untuk quotations tidak pernah
+ * didefinisikan di schema, jadi relational query itu selalu 500.
+ */
+async function quotationWithItems(id: string) {
+  const quotation = await db.query.quotations.findFirst({
+    where: eq(quotations.id, id),
+  })
+  if (!quotation) return null
+  const items = await db.select().from(quotationItems).where(eq(quotationItems.quotationId, id))
+  return { ...quotation, items }
+}
 
 quotationRouter.use('*', authMiddleware)
 quotationRouter.use('*', tenantMiddleware)
@@ -50,8 +72,13 @@ quotationRouter.get('/', async (c) => {
   const tenant = c.get('tenant')
   const { search, status } = c.req.query()
   const { page, limit, offset } = parsePagination(c)
+  const platformScope = isPlatformScope(c)
 
-  let whereClause: SQL = eq(quotations.tenantId, tenant.tenantId)
+  // FIX (temuan QT6c): dulu tidak ada dukungan platform scope — header
+  // X-Platform-Scope: all membuat tenantId jadi "*" → Postgres uuid parse
+  // error → 500. Kini parity dengan clients.ts.
+  // Platform scope: tanpa filter tenant (gabungan semua company).
+  let whereClause: SQL = platformScope ? and() as SQL : eq(quotations.tenantId, tenant.tenantId)
 
   if (search) {
     whereClause = and(
@@ -75,6 +102,15 @@ quotationRouter.get('/', async (c) => {
     }),
     db.select({ total: count() }).from(quotations).where(whereClause),
   ])
+
+  // Platform scope: sertakan tenantName untuk tagging FE.
+  if (platformScope) {
+    const nameById = new Map(
+      (await db.select({ id: tenants.id, name: tenants.name }).from(tenants)).map((t: any) => [t.id, t.name]),
+    )
+    const enriched = (data as any[]).map((q) => ({ ...q, tenantName: nameById.get(q.tenantId) ?? null }))
+    return c.json(paginated('quotations', enriched, totalRows[0]?.total ?? 0, { page, limit, offset }))
+  }
 
   return c.json(paginated('quotations', data, totalRows[0]?.total ?? 0, { page, limit, offset }))
 })
@@ -107,19 +143,16 @@ quotationRouter.get('/:id', async (c) => {
 
   const quotation = await db.query.quotations.findFirst({
     where: and(eq(quotations.id, id), eq(quotations.tenantId, tenant.tenantId)),
-    with: {
-      items: true,
-    },
   })
 
   if (!quotation) {
     return c.json({ error: 'Quotation not found' }, 404)
   }
 
-  return c.json({ quotation })
+  return c.json({ quotation: await quotationWithItems(quotation.id) })
 })
 
-quotationRouter.post('/', async (c) => {
+quotationRouter.post('/', validate(createQuotationSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const user = c.get('user')
   const body = getValidated<typeof createQuotationSchema>(c, 'json')!
@@ -177,15 +210,12 @@ quotationRouter.post('/', async (c) => {
     })
   }
 
-  const result = await db.query.quotations.findFirst({
-    where: eq(quotations.id, quotation.id),
-    with: { items: true },
-  })
+  const result = await quotationWithItems(quotation.id)
 
   return c.json({ quotation: result }, 201)
 })
 
-quotationRouter.patch('/:id', async (c) => {
+quotationRouter.patch('/:id', validate(updateQuotationSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
   const body = getValidated<typeof updateQuotationSchema>(c, 'json')!
@@ -240,10 +270,7 @@ quotationRouter.patch('/:id', async (c) => {
     .where(and(eq(quotations.id, id), eq(quotations.tenantId, tenant.tenantId)))
     .returning()
 
-  const result = await db.query.quotations.findFirst({
-    where: eq(quotations.id, updated.id),
-    with: { items: true },
-  })
+  const result = await quotationWithItems(updated.id)
 
   return c.json({ quotation: result })
 })
@@ -256,7 +283,7 @@ const updateQuotationStatusSchema = z.object({
   rejectionReason: z.string().optional(),
 })
 
-quotationRouter.post('/:id/status', async (c) => {
+quotationRouter.post('/:id/status', validate(updateQuotationStatusSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
   const { status, rejectionReason } = getValidated<typeof updateQuotationStatusSchema>(c, 'json')!
@@ -266,6 +293,24 @@ quotationRouter.post('/:id/status', async (c) => {
     columns: { id: true, status: true, createdBy: true },
   })
   if (!existing) return c.json({ error: 'Quotation not found' }, 404)
+
+  // FIX: peta transisi — dulu /status menerima transisi apa pun sehingga
+  // alur approval bisa dibypass (draft → sent langsung tanpa RACI).
+  const allowedTransitions: Record<string, string[]> = {
+    draft: ['pending_approval'],
+    pending_approval: ['sent', 'accepted', 'draft'],
+    sent: ['accepted', 'declined'],
+    declined: [],
+    expired: [],
+    converted_to_invoice: [],
+    converted_to_project: [],
+  }
+  if (!(allowedTransitions[existing.status] || []).includes(status)) {
+    return c.json(
+      { error: `Transisi tidak valid: ${existing.status} → ${status}` },
+      400,
+    )
+  }
 
   // Submit for approval (draft → pending_approval) is free for the author;
   // leaving pending_approval (approve → sent) requires level ≥ 60 RACI.
@@ -313,6 +358,7 @@ quotationRouter.post('/:id/status', async (c) => {
 // Explicit approve endpoint for the RACI queue (draft → pending_approval / sent).
 quotationRouter.post(
   '/:id/approve',
+  validate(approveBodySchema, 'json'),
   requireApprover(
     async (c) => {
       const tenant = c.get('tenant') as { tenantId: string }
@@ -361,11 +407,11 @@ quotationRouter.post('/:id/convert-to-invoice', async (c) => {
 
   const quotation = await db.query.quotations.findFirst({
     where: and(eq(quotations.id, id), eq(quotations.tenantId, tenant.tenantId)),
-    with: { items: true },
   })
 
   if (!quotation) return c.json({ error: 'Quotation not found' }, 404)
   if (quotation.status !== 'accepted') return c.json({ error: 'Quotation must be accepted first' }, 400)
+  Object.assign(quotation, { items: await db.select().from(quotationItems).where(eq(quotationItems.quotationId, quotation.id)) })
 
   const now = new Date()
   const datePart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
@@ -404,11 +450,11 @@ quotationRouter.post('/:id/convert-to-project', async (c) => {
 
   const quotation = await db.query.quotations.findFirst({
     where: and(eq(quotations.id, id), eq(quotations.tenantId, tenant.tenantId)),
-    with: { items: true },
   })
 
   if (!quotation) return c.json({ error: 'Quotation not found' }, 404)
   if (quotation.status !== 'accepted') return c.json({ error: 'Quotation must be accepted first' }, 400)
+  Object.assign(quotation, { items: await db.select().from(quotationItems).where(eq(quotationItems.quotationId, quotation.id)) })
 
   const now = new Date()
   const projectCode = `PRJ-${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(Math.floor(Math.random() * 1000)).padStart(3, '0')}`
@@ -437,8 +483,10 @@ quotationRouter.delete('/:id', async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
 
-  await db.delete(quotationItems).where(eq(quotationItems.quotationId, id))
-
+  // FIX IDOR (P0): parent dihapus DENGAN filter tenant DULU, baru items.
+  // Dulu items dihapus dengan quotationId mentah SEBELUM cek tenant — tenant
+  // lain bisa mengosongkan line items quotation tenant manapun (parent balas
+  // 404 tapi items sudah lenyap; terbukti live di TC-QT5).
   const [deleted] = await db
     .delete(quotations)
     .where(and(eq(quotations.id, id), eq(quotations.tenantId, tenant.tenantId)))
@@ -447,6 +495,8 @@ quotationRouter.delete('/:id', async (c) => {
   if (!deleted) {
     return c.json({ error: 'Quotation not found' }, 404)
   }
+
+  await db.delete(quotationItems).where(eq(quotationItems.quotationId, id))
 
   return c.json({ message: 'Quotation deleted' })
 })

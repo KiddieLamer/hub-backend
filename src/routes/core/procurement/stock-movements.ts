@@ -79,7 +79,7 @@ stockMovementsRouter.get('/summary', async (c) => {
 })
 
 // Manual stock adjustment
-stockMovementsRouter.post('/adjust', async (c) => {
+stockMovementsRouter.post('/adjust', validate(adjustSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const { itemId, quantity, notes } = getValidated<typeof adjustSchema>(c, 'json')!
@@ -115,7 +115,7 @@ stockMovementsRouter.post('/adjust', async (c) => {
 })
 
 // Project usage (out stock)
-stockMovementsRouter.post('/project-use', async (c) => {
+stockMovementsRouter.post('/project-use', validate(projectUseSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
   const { itemId, projectId, quantity, notes } = getValidated<typeof projectUseSchema>(c, 'json')!

@@ -16,8 +16,21 @@ export type TenantVariables = {
 export async function tenantMiddleware(c: Context<{ Variables: { user: AuthUser } & Record<string, unknown> }>, next: Next) {
   const user = c.get('user')
   const tenantId = c.req.header('X-Tenant-ID')
+  const isHubAdmin = user.platformRole === 'hub-admin'
+
+  // Platform scope (hub-admin, frontend kirim `X-Platform-Scope: all` ATAU
+  // `?scope=all` saat platform mode): boleh tanpa X-Tenant-ID. Context
+  // tenant ditandai `'*'` — handler yang mengimplementasi isPlatformScope
+  // akan melepas filter tenant, sisanya mengembalikan kosong (aman).
+  const platformScope = isHubAdmin &&
+    (c.req.header('X-Platform-Scope') === 'all' || c.req.query('scope') === 'all')
 
   if (!tenantId) {
+    if (platformScope) {
+      c.set('tenant', { tenantId: '*', tenantRole: 'hub-admin' })
+      await next()
+      return
+    }
     return c.json({ error: 'X-Tenant-ID header required' }, 400)
   }
 
@@ -27,8 +40,6 @@ export async function tenantMiddleware(c: Context<{ Variables: { user: AuthUser 
       eq(tenantMembers.tenantId, tenantId)
     ),
   })
-
-  const isHubAdmin = user.platformRole === 'hub-admin'
 
   if (!membership && !isHubAdmin) {
     return c.json({ error: 'Access denied to this tenant' }, 403)

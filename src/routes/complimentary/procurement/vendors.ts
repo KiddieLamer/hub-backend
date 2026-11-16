@@ -61,7 +61,7 @@ vendorsRouter.get('/:id', async (c) => {
 })
 
 // Create vendor
-vendorsRouter.post('/', async (c) => {
+vendorsRouter.post('/', validate(createVendorSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const body = getValidated<typeof createVendorSchema>(c, 'json')!
 
@@ -75,7 +75,7 @@ vendorsRouter.post('/', async (c) => {
 })
 
 // Update vendor
-vendorsRouter.patch('/:id', async (c) => {
+vendorsRouter.patch('/:id', validate(updateVendorSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
   const body = getValidated<typeof updateVendorSchema>(c, 'json')!

@@ -73,7 +73,7 @@ catalogItemsRouter.get('/:id', async (c) => {
 })
 
 // Create item
-catalogItemsRouter.post('/', async (c) => {
+catalogItemsRouter.post('/', validate(createItemSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const body = getValidated<typeof createItemSchema>(c, 'json')!
 
