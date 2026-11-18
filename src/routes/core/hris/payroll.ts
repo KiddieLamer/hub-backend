@@ -1,8 +1,8 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, SQL, count } from 'drizzle-orm'
+import { eq, and, desc, SQL, count } from 'drizzle-orm'
 import { db } from '../../../db'
-import { payrollProfiles, payrolls, payrollItems } from '../../../db/schema'
+import { payrollProfiles, payrolls, payrollItems, users } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
@@ -179,6 +179,44 @@ payrollRouter.get('/', async (c) => {
   ])
 
   return c.json(paginated('payrolls', data, Number(total), pagination))
+})
+
+// Daftar payroll SELURUH tenant (owner/admin/hub-admin saja) — dipakai
+// halaman "Payroll Run" di window Finance. Wajib terdaftar sebelum /:id.
+payrollRouter.get('/all', async (c) => {
+  const tenant = c.get('tenant') as { tenantId: string; tenantRole?: string }
+  const user = c.get('user')
+  const isAdmin =
+    user?.platformRole === 'hub-admin' ||
+    tenant.tenantRole === 'owner' ||
+    tenant.tenantRole === 'admin'
+  if (!isAdmin) return c.json({ error: 'Hanya admin yang dapat melihat payroll tenant' }, 403)
+
+  const { month, year } = c.req.query()
+  const conditions: SQL[] = [eq(payrolls.tenantId, tenant.tenantId)]
+  if (month) conditions.push(eq(payrolls.periodMonth, Number(month)))
+  if (year) conditions.push(eq(payrolls.periodYear, Number(year)))
+  const where = and(...conditions)
+
+  const rows = await db
+    .select({
+      id: payrolls.id,
+      userId: payrolls.userId,
+      fullName: users.fullName,
+      periodMonth: payrolls.periodMonth,
+      periodYear: payrolls.periodYear,
+      basicSalary: payrolls.basicSalary,
+      totalAllowances: payrolls.totalAllowances,
+      totalDeductions: payrolls.totalDeductions,
+      netSalary: payrolls.netSalary,
+      status: payrolls.status,
+    })
+    .from(payrolls)
+    .leftJoin(users, eq(users.id, payrolls.userId))
+    .where(where)
+    .orderBy(desc(payrolls.netSalary))
+
+  return c.json({ payrolls: rows, total: rows.length })
 })
 
 payrollRouter.get('/:id', async (c) => {

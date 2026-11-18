@@ -46,6 +46,8 @@ const updateTenantSchema = z.object({
   email: z.string().email().optional(),
   address: z.string().optional(),
   taxId: z.string().max(50).optional(),
+  bankName: z.string().max(100).optional().nullable(),
+  bankAccountNumber: z.string().max(50).optional().nullable(),
   logoUrl: z.string().optional(),
   gmapLink: z.string().optional(),
   gdriveLink: z.string().optional(),

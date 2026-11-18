@@ -91,10 +91,19 @@ expenseCategoriesRouter.delete('/:id', async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
 
-  const [deleted] = await db
-    .delete(expenseCategories)
-    .where(and(eq(expenseCategories.id, id), eq(expenseCategories.tenantId, tenant.tenantId)))
-    .returning()
+  // F-FIN-9: kategori yang masih direferensikan claim (FK restrict) → 409, bukan 500 raw.
+  let deleted
+  try {
+    ;[deleted] = await db
+      .delete(expenseCategories)
+      .where(and(eq(expenseCategories.id, id), eq(expenseCategories.tenantId, tenant.tenantId)))
+      .returning()
+  } catch (err) {
+    if ((err as { code?: string })?.code === '23503') {
+      return c.json({ error: 'Category is still referenced by expense claims' }, 409)
+    }
+    throw err
+  }
 
   if (!deleted) return c.json({ error: 'Category not found' }, 404)
 

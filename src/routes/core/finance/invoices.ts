@@ -1,9 +1,9 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, SQL, ilike, count } from 'drizzle-orm'
+import { eq, and, SQL, ilike, count, isNull, desc } from 'drizzle-orm'
 import { parsePagination, paginated } from '../../../lib/pagination'
 import { db } from '../../../db'
-import { invoices, invoiceItems, paymentsReceived } from '../../../db/schema'
+import { invoices, invoiceItems, paymentsReceived, clients } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
@@ -86,14 +86,39 @@ invoicesRouter.get('/stats', async (c) => {
     paid: all.filter((i) => i.status === 'paid').length,
     overdue: all.filter((i) => i.status === 'overdue').length,
     cancelled: all.filter((i) => i.status === 'cancelled').length,
-    totalRevenue: all.reduce((sum, i) => sum + Number(i.grandTotal), 0),
-    totalPaid: all.reduce((sum, i) => sum + Number(i.amountPaid), 0),
+    // F-FIN-6: invoice cancelled bukan pendapatan — keluarkan dari revenue/paid.
+    totalRevenue: all
+      .filter((i) => i.status !== 'cancelled')
+      .reduce((sum, i) => sum + Number(i.grandTotal), 0),
+    totalPaid: all
+      .filter((i) => i.status !== 'cancelled')
+      .reduce((sum, i) => sum + Number(i.amountPaid), 0),
   }
 
   return c.json({ stats })
 })
 
 // Get invoice detail
+// Daftar SELURUH payment tenant (untuk mutasi kas / rekonsiliasi di window
+// Finance). Wajib terdaftar sebelum /:id.
+invoicesRouter.get('/payments/all', async (c) => {
+  const tenant = c.get('tenant')
+  const rows = await db
+    .select({
+      id: paymentsReceived.id,
+      invoiceId: paymentsReceived.invoiceId,
+      invoiceNumber: invoices.invoiceNumber,
+      amount: paymentsReceived.amount,
+      paymentDate: paymentsReceived.paymentDate,
+      paymentMethod: paymentsReceived.paymentMethod,
+    })
+    .from(paymentsReceived)
+    .innerJoin(invoices, eq(invoices.id, paymentsReceived.invoiceId))
+    .where(eq(invoices.tenantId, tenant.tenantId))
+    .orderBy(desc(paymentsReceived.paymentDate))
+  return c.json({ payments: rows, total: rows.length })
+})
+
 invoicesRouter.get('/:id', async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
@@ -122,21 +147,36 @@ invoicesRouter.post('/', validate(createInvoiceSchema, 'json'), async (c) => {
   const authUser = c.get('user')
   const body = getValidated<typeof createInvoiceSchema>(c, 'json')!
 
+  // F-FIN-7: clientId wajib milik tenant yang sama (cegah referensi lintas tenant).
+  const clientRow = await db.query.clients.findFirst({
+    where: and(eq(clients.id, body.clientId), eq(clients.tenantId, tenant.tenantId), isNull(clients.deletedAt)),
+  })
+  if (!clientRow) return c.json({ error: 'Client not found in this tenant' }, 400)
+
   // Calculate totals
   const subtotal = body.items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0)
   const taxAmount = subtotal * (body.taxRate / 100)
   const grandTotal = subtotal + taxAmount - body.discountAmount
 
-  const [invoice] = await db.insert(invoices).values({
-    ...body,
-    tenantId: tenant.tenantId,
-    createdBy: authUser.id,
-    subtotal: String(subtotal),
-    taxRate: String(body.taxRate),
-    taxAmount: String(taxAmount),
-    discountAmount: String(body.discountAmount),
-    grandTotal: String(grandTotal),
-  }).returning()
+  // F-FIN-2: duplikat invoiceNumber (termasuk lintas tenant) → 409, bukan 500 raw.
+  let invoice
+  try {
+    ;[invoice] = await db.insert(invoices).values({
+      ...body,
+      tenantId: tenant.tenantId,
+      createdBy: authUser.id,
+      subtotal: String(subtotal),
+      taxRate: String(body.taxRate),
+      taxAmount: String(taxAmount),
+      discountAmount: String(body.discountAmount),
+      grandTotal: String(grandTotal),
+    }).returning()
+  } catch (err) {
+    if ((err as { code?: string })?.code === '23505') {
+      return c.json({ error: 'Invoice number already exists' }, 409)
+    }
+    throw err
+  }
 
   // Insert items
   if (body.items.length > 0) {
@@ -162,26 +202,46 @@ invoicesRouter.patch('/:id', validate(createInvoiceSchema.partial(), 'json'), as
   const { id } = c.req.param()
   const body = getValidated<typeof createInvoiceSchema>(c, 'json')!
 
+  const existing = await db.query.invoices.findFirst({
+    where: and(eq(invoices.id, id), eq(invoices.tenantId, tenant.tenantId)),
+  })
+  if (!existing) return c.json({ error: 'Invoice not found' }, 404)
+
+  // F-FIN-1b: subtotal/tax/grandTotal WAJIB dihitung ulang saat items/tax/discount berubah.
+  const { items, taxRate, discountAmount, ...restFields } = body
+  const nextItems =
+    items ??
+    (await db.select().from(invoiceItems).where(eq(invoiceItems.invoiceId, id))).map((it) => ({
+      quantity: Number(it.quantity),
+      unitPrice: Number(it.unitPrice),
+    }))
+  const nextTaxRate = taxRate !== undefined ? taxRate : Number(existing.taxRate)
+  const nextDiscount = discountAmount !== undefined ? discountAmount : Number(existing.discountAmount)
+  const subtotal = nextItems.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0)
+  const taxAmount = subtotal * (nextTaxRate / 100)
+  const grandTotal = subtotal + taxAmount - nextDiscount
+
   const [updated] = await db
     .update(invoices)
     .set({
-      ...body,
-      taxRate: body.taxRate ? String(body.taxRate) : undefined,
-      discountAmount: body.discountAmount ? String(body.discountAmount) : undefined,
+      ...restFields,
+      taxRate: String(nextTaxRate),
+      taxAmount: String(taxAmount),
+      discountAmount: String(nextDiscount),
+      subtotal: String(subtotal),
+      grandTotal: String(grandTotal),
       updatedAt: new Date(),
     })
     .where(and(eq(invoices.id, id), eq(invoices.tenantId, tenant.tenantId)))
     .returning()
 
-  if (!updated) return c.json({ error: 'Invoice not found' }, 404)
-
   // Update items if provided
-  if (body.items) {
+  if (items) {
     await db.delete(invoiceItems).where(eq(invoiceItems.invoiceId, id))
 
-    if (body.items.length > 0) {
+    if (items.length > 0) {
       await db.insert(invoiceItems).values(
-        body.items.map((item) => ({
+        items.map((item) => ({
           invoiceId: id,
           catalogItemId: item.catalogItemId || null,
           itemName: item.itemName,
@@ -210,6 +270,13 @@ invoicesRouter.post('/:id/payments', validate(recordPaymentSchema, 'json'), asyn
 
   if (!invoice) return c.json({ error: 'Invoice not found' }, 404)
   if (invoice.status === 'cancelled') return c.json({ error: 'Invoice is cancelled' }, 400)
+
+  // F-FIN-3/4: payment wajib positif dan tidak boleh melebihi sisa tagihan.
+  const remaining = Number(invoice.grandTotal) - Number(invoice.amountPaid)
+  if (body.amount <= 0) return c.json({ error: 'Payment amount must be greater than 0' }, 400)
+  if (body.amount > remaining + 1e-9) {
+    return c.json({ error: `Payment exceeds remaining balance (${remaining})` }, 400)
+  }
 
   // Create payment record
   const [payment] = await db.insert(paymentsReceived).values({
@@ -246,6 +313,12 @@ invoicesRouter.post('/:id/status', validate(updateInvoiceStatusSchema, 'json'), 
   const tenant = c.get('tenant')
   const { id } = c.req.param()
   const { status } = getValidated<typeof updateInvoiceStatusSchema>(c, 'json')!
+
+  // F-FIN-5: status 'paid' hanya boleh tercapai lewat endpoint payments
+  // (menandai lunas tanpa bukti pembayaran membuka jalur penipuan laporan).
+  if (status === 'paid') {
+    return c.json({ error: 'Status paid only set via /payments endpoint' }, 400)
+  }
 
   const [updated] = await db
     .update(invoices)

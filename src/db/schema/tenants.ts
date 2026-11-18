@@ -29,6 +29,10 @@ export const tenants = pgTable('tenants', {
   gmapLink: text('gmap_link'),
   gdriveLink: text('gdrive_link'),
 
+  // 3b. Rekening operasional (dipakai kartu Saldo Kas di window Finance)
+  bankName: varchar('bank_name', { length: 100 }),
+  bankAccountNumber: varchar('bank_account_number', { length: 50 }),
+
   // 3a. Akun sosial media perusahaan (URL profil).
   tiktokUrl: text('tiktok_url'),
   instagramUrl: text('instagram_url'),

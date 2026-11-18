@@ -36,6 +36,27 @@
       "when": 1792793954581,
       "tag": "0004_sudden_paibok",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1795031659260,
+      "tag": "0005_client_activities_soft_delete",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1795034973760,
+      "tag": "0006_finance_extras",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1795036758270,
+      "tag": "0007_tenant_bank_accounts",
+      "breakpoints": true
     }
   ]
 }

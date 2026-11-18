@@ -32,6 +32,15 @@ import expenseCategoriesRouter from './routes/core/finance/expense-categories'
 import expenseClaimsRouter from './routes/core/finance/expense-claims'
 import departmentBudgetsRouter from './routes/core/finance/department-budgets'
 import invoicesRouter from './routes/core/finance/invoices'
+import {
+  financeScenariosRouter,
+  financeDepositsRouter,
+  financeTaxCodesRouter,
+  financePayrollComponentsRouter,
+  financeCompensationsRouter,
+  financeBusinessCasesRouter,
+  financeRisksRouter,
+} from './routes/core/finance/finance-extras'
 
 // Core - Compliance
 import auditLogsRouter from './routes/core/compliance/audit-logs'
@@ -71,9 +80,11 @@ app.use('*', corsMiddleware)
 // does NOT see downstream throws. ZodError -> 400, else -> 500.
 app.onError(handleError)
 app.use('*', securityHeadersMiddleware)
-// Global abuse dampening: ~100 req/min per IP across all API paths.
+// Global abuse dampening: ~600 req/min per IP across all API paths.
 // Registered before route handlers; /health and / are exempt inside the limiter.
-app.use('*', globalRateLimit())
+// (100/menit terlalu ketat sejak window Finance memuat ~22 request paralel
+// saat dibuka + burst desktop — burst sah user tunggal kerap menembus 100.)
+app.use('*', globalRateLimit({ windowMs: 60_000, max: 600 }))
 
 app.get('/', (c) => {
   return c.json({ name: 'hub-backend', version: APP_VERSION, status: 'ok' })
@@ -111,6 +122,13 @@ app.route('/api/finance/expense-categories', expenseCategoriesRouter)
 app.route('/api/finance/expense-claims', expenseClaimsRouter)
 app.route('/api/finance/department-budgets', departmentBudgetsRouter)
 app.route('/api/finance/invoices', invoicesRouter)
+app.route('/api/finance/scenarios', financeScenariosRouter)
+app.route('/api/finance/deposits', financeDepositsRouter)
+app.route('/api/finance/tax-codes', financeTaxCodesRouter)
+app.route('/api/finance/payroll-components', financePayrollComponentsRouter)
+app.route('/api/finance/compensations', financeCompensationsRouter)
+app.route('/api/finance/business-cases', financeBusinessCasesRouter)
+app.route('/api/finance/risks', financeRisksRouter)
 app.route('/api/compliance/audit-logs', auditLogsRouter)
 app.route('/api/compliance/tickets', supportTicketsRouter)
 app.route('/api/projects', projectsRouter)

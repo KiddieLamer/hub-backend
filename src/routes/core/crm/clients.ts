@@ -1,13 +1,17 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { eq, and, or, ilike, isNull, count, asc, desc, type SQL } from 'drizzle-orm'
+import { eq, and, or, ilike, isNull, count, asc, desc, sql, type SQL } from 'drizzle-orm'
+import { alias } from 'drizzle-orm/pg-core'
 import { db } from '../../../db'
-import { clients, clientActivities, clientInsights, clientTasks, clientWarranties, users, tenants } from '../../../db/schema'
+import { clients, clientActivities, clientInsights, clientTasks, clientWarranties, users, tenants, projects, invoices, bookings, quotations } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { requireModuleAccess } from '../../../middleware/rbac'
 import { tenantMiddleware, type TenantVariables } from '../../../middleware/tenant'
 import { parsePagination, paginated } from '../../../lib/pagination'
 import { validate, getValidated } from '../../../middleware/validate'
+
+// Alias untuk JOIN nama penghapus (tombstone) tanpa bentrok dengan author.
+const deletedByUser = alias(users, 'deleted_by_user')
 
 type Variables = AuthVariables & TenantVariables
 
@@ -204,6 +208,71 @@ clientsRouter.get('/:id', async (c) => {
   return c.json({ client })
 })
 
+/**
+ * Agregat "Riwayat transaksi" per client — dihitung LIVE dari tabel modul
+ * lain (projects, invoices, quotations, bookings) via clientId. Single
+ * source of truth tetap di modul masing-masing; tidak ada data duplikat.
+ */
+clientsRouter.get('/:id/stats', async (c) => {
+  const tenant = c.get('tenant')
+  const { id } = c.req.param()
+  const client = await getOwnedClient(tenant.tenantId, id)
+
+  if (!client) {
+    return c.json({ error: 'Client not found' }, 404)
+  }
+
+  const [projectAgg, invoiceAgg, quotationAgg, bookingAgg] = await Promise.all([
+    db
+      .select({ total: count(), lastAt: sql<string | null>`max(${projects.createdAt})` })
+      .from(projects)
+      .where(and(eq(projects.clientId, id), eq(projects.tenantId, tenant.tenantId))),
+    db
+      .select({
+        total: count(),
+        totalValue: sql<string>`coalesce(sum(${invoices.grandTotal}), 0)`,
+        paidValue: sql<string>`coalesce(sum(${invoices.amountPaid}), 0)`,
+        lastAt: sql<string | null>`max(${invoices.createdAt})`,
+      })
+      .from(invoices)
+      .where(and(eq(invoices.clientId, id), eq(invoices.tenantId, tenant.tenantId))),
+    db
+      .select({ total: count(), lastAt: sql<string | null>`max(${quotations.createdAt})` })
+      .from(quotations)
+      .where(and(eq(quotations.clientId, id), eq(quotations.tenantId, tenant.tenantId))),
+    db
+      .select({ total: count(), lastAt: sql<string | null>`max(${bookings.createdAt})` })
+      .from(bookings)
+      .where(and(eq(bookings.clientId, id), eq(bookings.tenantId, tenant.tenantId))),
+  ])
+
+  const lastTransactionAt = [
+    invoiceAgg[0]?.lastAt,
+    quotationAgg[0]?.lastAt,
+    bookingAgg[0]?.lastAt,
+    projectAgg[0]?.lastAt,
+  ]
+    .filter((v): v is string => Boolean(v))
+    .sort()
+    .at(-1) ?? null
+
+  return c.json({
+    stats: {
+      projects: { count: Number(projectAgg[0]?.total ?? 0), lastAt: projectAgg[0]?.lastAt ?? null },
+      invoices: {
+        count: Number(invoiceAgg[0]?.total ?? 0),
+        totalValue: Number(invoiceAgg[0]?.totalValue ?? 0),
+        paidValue: Number(invoiceAgg[0]?.paidValue ?? 0),
+        lastAt: invoiceAgg[0]?.lastAt ?? null,
+      },
+      quotations: { count: Number(quotationAgg[0]?.total ?? 0), lastAt: quotationAgg[0]?.lastAt ?? null },
+      bookings: { count: Number(bookingAgg[0]?.total ?? 0), lastAt: bookingAgg[0]?.lastAt ?? null },
+      memberSince: client.createdAt,
+      lastTransactionAt,
+    },
+  })
+})
+
 clientsRouter.post('/', validate(createClientSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const body = getValidated<typeof createClientSchema>(c, 'json')!
@@ -274,10 +343,23 @@ clientsRouter.delete('/:id', async (c) => {
 
 clientsRouter.get('/:clientId/activities', async (c) => {
   const tenant = c.get('tenant')
+  const user = c.get('user')
   const { clientId } = c.req.param()
 
   const client = await getOwnedClient(tenant.tenantId, clientId)
   if (!client) return c.json({ error: 'Client not found' }, 404)
+
+  // Tombstone (catatan terhapus) hanya terlihat oleh hub-admin / owner / admin tenant.
+  const canSeeDeleted =
+    user?.platformRole === 'hub-admin' ||
+    tenant.tenantRole === 'owner' ||
+    tenant.tenantRole === 'admin'
+
+  const conditions: SQL[] = [
+    eq(clientActivities.clientId, clientId),
+    eq(clientActivities.tenantId, tenant.tenantId),
+  ]
+  if (!canSeeDeleted) conditions.push(isNull(clientActivities.deletedAt))
 
   const rows = await db
     .select({
@@ -288,15 +370,13 @@ clientsRouter.get('/:clientId/activities', async (c) => {
       authorId: clientActivities.authorId,
       authorName: users.fullName,
       authorAvatar: users.avatarUrl,
+      deletedAt: clientActivities.deletedAt,
+      deletedByName: deletedByUser.fullName,
     })
     .from(clientActivities)
     .leftJoin(users, eq(users.id, clientActivities.authorId))
-    .where(
-      and(
-        eq(clientActivities.clientId, clientId),
-        eq(clientActivities.tenantId, tenant.tenantId)
-      )
-    )
+    .leftJoin(deletedByUser, eq(deletedByUser.id, clientActivities.deletedBy))
+    .where(and(...conditions))
     .orderBy(desc(clientActivities.createdAt))
 
   return c.json({ activities: rows })
@@ -341,13 +421,15 @@ clientsRouter.post('/:clientId/activities', validate(clientActivitySchema, 'json
 
 clientsRouter.delete('/:clientId/activities/:id', async (c) => {
   const tenant = c.get('tenant')
+  const user = c.get('user')
   const { clientId, id } = c.req.param()
 
   const client = await getOwnedClient(tenant.tenantId, clientId)
   if (!client) return c.json({ error: 'Client not found' }, 404)
 
-  const [deleted] = await db
-    .delete(clientActivities)
+  const [existing] = await db
+    .select({ id: clientActivities.id, authorId: clientActivities.authorId, deletedAt: clientActivities.deletedAt })
+    .from(clientActivities)
     .where(
       and(
         eq(clientActivities.id, id),
@@ -355,7 +437,24 @@ clientsRouter.delete('/:clientId/activities/:id', async (c) => {
         eq(clientActivities.tenantId, tenant.tenantId)
       )
     )
-    .returning()
+
+  if (!existing || existing.deletedAt) return c.json({ error: 'Activity not found' }, 404)
+
+  // Hanya penulis catatan, atau admin (owner/admin tenant/hub-admin) yang boleh menghapus.
+  const isAdmin =
+    user?.platformRole === 'hub-admin' ||
+    tenant.tenantRole === 'owner' ||
+    tenant.tenantRole === 'admin'
+  if (existing.authorId !== user.id && !isAdmin) {
+    return c.json({ error: 'Hanya penulis catatan atau admin yang bisa menghapus' }, 403)
+  }
+
+  // Soft delete — baris tetap ada sebagai tombstone untuk audit admin.
+  const [deleted] = await db
+    .update(clientActivities)
+    .set({ deletedAt: new Date(), deletedBy: user.id })
+    .where(eq(clientActivities.id, id))
+    .returning({ id: clientActivities.id })
 
   if (!deleted) return c.json({ error: 'Activity not found' }, 404)
 

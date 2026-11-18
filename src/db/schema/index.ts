@@ -33,6 +33,15 @@ export { departmentBudgets, type DepartmentBudget, type NewDepartmentBudget } fr
 export { invoices, type Invoice, type NewInvoice } from './invoices'
 export { invoiceItems, type InvoiceItem, type NewInvoiceItem } from './invoice-items'
 export { paymentsReceived, type PaymentReceived, type NewPaymentReceived } from './payments-received'
+export {
+  financeScenarios,
+  financeDeposits,
+  financeTaxCodes,
+  financePayrollComponents,
+  financeCompensations,
+  financeBusinessCases,
+  financeRisks,
+} from './finance-extras'
 export { systemAuditLogs, type SystemAuditLog, type NewSystemAuditLog } from './system-audit-logs'
 export { supportTickets, type SupportTicket, type NewSupportTicket } from './support-tickets'
 export { projects, type Project, type NewProject } from './projects'

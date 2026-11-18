@@ -34,6 +34,11 @@ export async function tenantMiddleware(c: Context<{ Variables: { user: AuthUser 
     return c.json({ error: 'X-Tenant-ID header required' }, 400)
   }
 
+  // Header rusak/bukan UUID → 400, bukan 500 dari query Postgres.
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tenantId)) {
+    return c.json({ error: 'X-Tenant-ID must be a valid uuid' }, 400)
+  }
+
   const membership = await db.query.tenantMembers.findFirst({
     where: and(
       eq(tenantMembers.userId, user.id),

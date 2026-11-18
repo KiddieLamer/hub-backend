@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { eq, and, SQL, ilike, count } from 'drizzle-orm'
 import { db } from '../../../db'
-import { expenseClaims, departmentBudgets } from '../../../db/schema'
+import { expenseClaims, departmentBudgets, clients } from '../../../db/schema'
 import { authMiddleware, type Variables as AuthVariables } from '../../../middleware/auth'
 import { requireModuleAccessExcept } from '../../../middleware/rbac'
 import { requireApprover } from '../../../lib/approvals'
@@ -110,12 +110,29 @@ expenseClaimsRouter.post('/', validate(createClaimSchema, 'json'), async (c) => 
   const authUser = c.get('user')
   const body = getValidated<typeof createClaimSchema>(c, 'json')!
 
-  const [claim] = await db.insert(expenseClaims).values({
-    ...body,
-    tenantId: tenant.tenantId,
-    submittedBy: authUser.id,
-    amount: String(body.amount),
-  }).returning()
+  // F-FIN-7: clientId (opsional) wajib milik tenant yang sama bila diisi.
+  if (body.clientId) {
+    const clientRow = await db.query.clients.findFirst({
+      where: and(eq(clients.id, body.clientId), eq(clients.tenantId, tenant.tenantId)),
+    })
+    if (!clientRow) return c.json({ error: 'Client not found in this tenant' }, 400)
+  }
+
+  // F-FIN-2b: duplikat expenseNumber (termasuk lintas tenant) → 409, bukan 500 raw.
+  let claim
+  try {
+    ;[claim] = await db.insert(expenseClaims).values({
+      ...body,
+      tenantId: tenant.tenantId,
+      submittedBy: authUser.id,
+      amount: String(body.amount),
+    }).returning()
+  } catch (err) {
+    if ((err as { code?: string })?.code === '23505') {
+      return c.json({ error: 'Expense number already exists' }, 409)
+    }
+    throw err
+  }
 
   return c.json({ claim }, 201)
 })
@@ -183,6 +200,9 @@ expenseClaimsRouter.post(
     })
     return claim ? { requesterUserId: claim.submittedBy, amount: claim.amount } : null
   }),
+  // F-FIN-8: validate() sempat hilang di route ini (tersembunyi di balik
+  // wrapper requireApprover) → getValidated undefined → approve 500 sejak lahir.
+  validate(approveSchema, 'json'),
   async (c) => {
   const tenant = c.get('tenant')
   const authUser = c.get('user')
