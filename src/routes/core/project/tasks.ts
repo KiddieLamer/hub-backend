@@ -26,6 +26,15 @@ const createTaskSchema = z.object({
   description: z.string().optional(),
   assignedTo: z.string().uuid().optional(),
   priority: z.enum(['low', 'medium', 'high', 'urgent']).default('medium'),
+  // Kategori task (general / social_media / ...) — varchar longgar, UI yang
+  // membatasi pilihan supaya kategori baru tidak butuh migrasi ulang
+  taskType: z.string().max(40).default('general'),
+  // Taksonomi konten sosmed (A/B: monetisasi, C: format) — opsional
+  contentType: z.string().max(40).optional(),
+  contentFormat: z.string().max(40).optional(),
+  // Channel tujuan posting + link konten per channel (social_media task)
+  channels: z.array(z.string().max(40)).optional(),
+  channelLinks: z.record(z.string().max(500)).optional(),
   dueDate: z.string().optional(),
   estimatedHours: z.number().min(0).optional(),
   position: z.number().default(0),
@@ -101,6 +110,34 @@ tasksRouter.get('/', async (c) => {
   ])
 
   return c.json(paginated('tasks', data, Number(total), pagination))
+})
+
+tasksRouter.get('/resolve-link', async (c) => {
+  const url = c.req.query('url') ?? ''
+  if (!/^https?:\/\//.test(url)) return c.json({ error: 'Invalid url' }, 400)
+  let host = ''
+  try {
+    host = new URL(url).hostname.replace(/^www\./, '')
+  } catch {
+    return c.json({ error: 'Invalid url' }, 400)
+  }
+  const allowed = [
+    'tiktok.com', 'vt.tiktok.com', 'instagram.com', 'youtu.be', 'youtube.com',
+    'youtube.com', 'facebook.com', 'fb.watch', 'x.com', 'twitter.com', 'threads.net',
+  ]
+  if (!allowed.some((d) => host === d || host.endsWith(`.${d}`))) {
+    return c.json({ error: 'Host tidak didukung' }, 400)
+  }
+  try {
+    const res = await fetch(url, {
+      redirect: 'follow',
+      signal: AbortSignal.timeout(8000),
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; HubBot/1.0)' },
+    })
+    return c.json({ finalUrl: res.url, status: res.status })
+  } catch {
+    return c.json({ error: 'Gagal resolve link' }, 502)
+  }
 })
 
 tasksRouter.get('/:id', async (c) => {
@@ -189,7 +226,7 @@ tasksRouter.post('/', validate(createTaskSchema, 'json'), async (c) => {
     action: 'task.create',
     module: 'projects',
     recordId: task.id,
-    newValues: { title: task.title, projectId: task.projectId, priority: task.priority },
+    newValues: { title: task.title, projectId: task.projectId, priority: task.priority, taskType: task.taskType },
   })
 
   return c.json({ task }, 201)
@@ -269,6 +306,9 @@ tasksRouter.patch('/:id', validate(updateTaskSchema, 'json'), async (c) => {
   return c.json({ task: updated })
 })
 
+// Resolve short/share link sosmed (vt.tiktok.com dll) → URL final yang
+// mengandung ID video, supaya frontend bisa bikin iframe embed preview.
+// Host dibatasi ke domain sosmed (anti open-proxy/SSRF).
 tasksRouter.post('/:id/move', validate(moveTaskSchema, 'json'), async (c) => {
   const tenant = c.get('tenant')
   const { id } = c.req.param()
@@ -297,6 +337,21 @@ tasksRouter.post('/:id/move', validate(moveTaskSchema, 'json'), async (c) => {
     ),
   })
   if (!colAllowed) return c.json({ error: 'Column not found' }, 404)
+
+  // SOCIAL MEDIA GATE: task social_media hanya boleh masuk kolom Done jika
+  // sudah punya channel dan SEMUA channel terlink kontennya. Set/unset done
+  // tetap lewat kanban Projects (geser kolom) — queue Social cuma indikator.
+  if (colAllowed.name.toLowerCase() === 'done' && current.taskType === 'social_media') {
+    const channels = (current.channels ?? []) as string[]
+    const links = (current.channelLinks ?? {}) as Record<string, string>
+    if (channels.length === 0) {
+      return c.json({ error: 'Task social media belum punya channel — edit task & centang channel dulu' }, 400)
+    }
+    const missing = channels.filter((ch) => !(links[ch] ?? '').trim())
+    if (missing.length > 0) {
+      return c.json({ error: `Lengkapi link konten untuk: ${missing.join(', ')}` }, 400)
+    }
+  }
 
   const [updated] = await db
     .update(tasks)

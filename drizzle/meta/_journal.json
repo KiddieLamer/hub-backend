@@ -57,6 +57,34 @@
       "when": 1795036758270,
       "tag": "0007_tenant_bank_accounts",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1795134895893,
+      "tag": "0008_ancient_sway",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1795385770833,
+      "tag": "0009_previous_madripoor",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1795386719370,
+      "tag": "0010_furry_dormammu",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1795387270866,
+      "tag": "0011_elite_old_lace",
+      "breakpoints": true
     }
   ]
 }
