@@ -27,6 +27,7 @@ const createClientSchema = z.object({
   industry: z.string().max(100).optional(),
   website: z.string().url().optional(),
   logoUrl: z.string().url().optional(),
+  avatarUrl: z.string().url().optional(),
   picName: z.string().max(255).optional(),
   picEmail: z.string().email().optional(),
   picPhone: z.string().max(20).optional(),

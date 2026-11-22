@@ -24,6 +24,10 @@ const createVendorSchema = z.object({
   taxId: z.string().max(50).optional(),
   address: z.string().optional(),
   bankDetails: z.string().optional(),
+  commodities: z.array(z.object({
+    commodity: z.string().min(1).max(255),
+    price: z.number().min(0),
+  })).optional(),
   rating: z.number().min(0).max(5).optional(),
 })
 

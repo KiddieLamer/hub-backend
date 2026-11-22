@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, text, decimal, timestamp } from 'drizzle-orm/pg-core'
+import { pgTable, uuid, varchar, text, decimal, timestamp, jsonb } from 'drizzle-orm/pg-core'
 import { tenants } from './tenants'
 
 export const vendors = pgTable('vendors', {
@@ -11,6 +11,8 @@ export const vendors = pgTable('vendors', {
   taxId: varchar('tax_id', { length: 50 }),
   address: text('address'),
   bankDetails: text('bank_details'),
+  /** Daftar komoditas yang dijual + harga: [{ commodity, price }] */
+  commodities: jsonb('commodities').$type<Array<{ commodity: string; price: number }>>().default([]),
   rating: decimal('rating', { precision: 3, scale: 2 }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),

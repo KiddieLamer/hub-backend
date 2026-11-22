@@ -2,6 +2,7 @@ import { Context, Next } from 'hono'
 import { and, eq, lt, sql } from 'drizzle-orm'
 import { db } from '../db'
 import { loginAttempts } from '../db/schema'
+import { env } from '../config/env'
 
 /**
  * Rate limiter + login lockout.
@@ -97,14 +98,28 @@ export function rateLimit(opts: RateLimitOpts) {
 // Paths that must always stay reachable: health checks and the root probe.
 const GLOBAL_LIMIT_EXEMPT_PATHS = new Set(['/health', '/'])
 
+// IP lokal — dipakai untuk pengecualian development (loop iterasi dev).
+const LOCAL_IPS = new Set(['unknown', '127.0.0.1', '::1', '::ffff:127.0.0.1'])
+
 /**
- * Global rate limit: ~100 requests/minute per IP, keyed on IP alone (not
+ * Global rate limit: ~600 requests/minute per IP, keyed on IP alone (not
  * IP+path), so it caps a client's total request volume across the whole API.
  * /health and / are exempt so orchestrator probes are never throttled.
+ *
+ * Di development LOKAL limiter ini diskip: satu mount dashboard Finance
+ * menembak ±22 endpoint, jadi iterasi dev gampang nyandung 600/menit.
+ * Skip hanya berlaku kalau NODE_ENV=development DAN request dari IP lokal —
+ * di production (atau kalau NODE_ENV salah set) client eksternal tetap
+ * dibatasi. Login lockout & rateLimit per-route TETAP aktif di semua env.
  */
-export function globalRateLimit(opts: RateLimitOpts = { windowMs: 60_000, max: 100 }) {
+export function globalRateLimit(opts: RateLimitOpts = { windowMs: 60_000, max: 600 }) {
   return async (c: Context, next: Next) => {
     if (GLOBAL_LIMIT_EXEMPT_PATHS.has(c.req.path)) {
+      await next()
+      return
+    }
+
+    if (env.NODE_ENV === 'development' && LOCAL_IPS.has(clientIp(c))) {
       await next()
       return
     }
