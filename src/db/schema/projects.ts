@@ -14,6 +14,8 @@ export const projects = pgTable('projects', {
   startDate: date('start_date'),
   endDate: date('end_date'),
   status: varchar('status', { length: 50 }).default('planning').notNull(),
+  priority: varchar('priority', { length: 20 }).default('medium').notNull(),
+  billingType: varchar('billing_type', { length: 20 }).default('fixed').notNull(),
   budget: decimal('budget', { precision: 15, scale: 2 }).default('0.00').notNull(),
   description: text('description'),
   createdAt: timestamp('created_at').defaultNow().notNull(),

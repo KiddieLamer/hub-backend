@@ -25,6 +25,8 @@ const createProjectSchema = z.object({
   startDate: z.string().optional(),
   endDate: z.string().optional(),
   status: z.enum(['planning', 'active', 'on_hold', 'completed', 'cancelled']).default('planning'),
+  priority: z.enum(['low', 'medium', 'high', 'urgent']).default('medium'),
+  billingType: z.enum(['fixed', 'hourly', 'retainer', 'internal']).default('fixed'),
   budget: z.number().min(0).default(0),
   description: z.string().optional(),
 })
